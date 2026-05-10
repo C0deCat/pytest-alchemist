@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytest-alchemist"
+version = "0.1.0"
+description = "Python test minimization utility based on historical coverage and swarm optimization"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pytest",
+  "pytest-cov",
+  "coverage",
+  "libcst",
+  "grimp",
+  "networkx",
+  "numpy",
+  "sqlalchemy",
+  "typer",
+  "rich",
+  "questionary",
+  "rich-pyfiglet"
+]
+
+[project.scripts]
+pytest-alchemist = "pytest_alchemist.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
