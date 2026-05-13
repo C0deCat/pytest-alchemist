@@ -1,13 +1,21 @@
 """Application scenarios for Pytest Alchemist."""
 
+from pathlib import Path
+from typing import Callable
+
 from pytest_alchemist.coverage_analysis.analyzer import CoverageAnalyzer
 from pytest_alchemist.coverage_analysis.models import CoverageCollectionResult
 from pytest_alchemist.database.facade import DatabaseFacade
 from pytest_alchemist.diff_picker.picker import DiffPicker
 from pytest_alchemist.minimizer.minimizer import Minimizer
 from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationResult
-from pytest_alchemist.test_runner.models import TestRunResult
-from pytest_alchemist.test_runner.runner import TestRunner
+from pytest_alchemist.test_runner.models import TestCase, TestRunResult
+from pytest_alchemist.test_runner.runner import CoverageFormat, run_tests
+
+RunTestsFunc = Callable[
+    [str, list[TestCase | str] | None, CoverageFormat | None],
+    TestRunResult,
+]
 
 
 class AlchemistApplication:
@@ -15,17 +23,19 @@ class AlchemistApplication:
 
     def __init__(
         self,
+        project_path: str | Path | None = None,
         database: DatabaseFacade | None = None,
         coverage_analyzer: CoverageAnalyzer | None = None,
         diff_picker: DiffPicker | None = None,
         minimizer: Minimizer | None = None,
-        test_runner: TestRunner | None = None,
+        run_tests_func: RunTestsFunc = run_tests,
     ) -> None:
+        self.project_path = Path(project_path or Path.cwd()).resolve()
         self._database = database or DatabaseFacade()
         self._coverage_analyzer = coverage_analyzer or CoverageAnalyzer(self._database)
         self._diff_picker = diff_picker or DiffPicker(self._database)
         self._minimizer = minimizer or Minimizer()
-        self._test_runner = test_runner or TestRunner()
+        self._run_tests = run_tests_func
 
     def collect_coverage(self) -> CoverageCollectionResult:
         """Collect and store coverage data."""
@@ -48,6 +58,21 @@ class AlchemistApplication:
         """Select and run a minimized test set."""
 
         minimization_result = self.select_tests(last_commits)
-        run_result = self._test_runner.run_tests(minimization_result.selected_tests)
+        run_result = self._run_tests(
+            str(self.project_path),
+            minimization_result.selected_tests,
+            None,
+        )
+        self._database.save_test_run(run_result)
+        return run_result
+
+    def run_tests(
+        self,
+        tests: list[str] | None = None,
+        collect_coverage: CoverageFormat | None = None,
+    ) -> TestRunResult:
+        """Run a requested test set in the target project."""
+
+        run_result = self._run_tests(str(self.project_path), tests, collect_coverage)
         self._database.save_test_run(run_result)
         return run_result

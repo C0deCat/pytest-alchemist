@@ -18,6 +18,7 @@ Current commands:
 - `collect-coverage`
 - `select-tests --last-commits N`
 - `run-minimal --last-commits N`
+- `run-tests [NODEID...]`
 
 Dependencies:
 
@@ -168,3 +169,17 @@ pytest-alchemist run-minimal --last-commits N
 
 The same boundaries should be preserved when mocked components are replaced
 with real implementations.
+
+## Project Artifacts
+
+All project-specific data produced by `pytest-alchemist` should be stored under
+the target project root in:
+
+```text
+.pytest-alchemist-artifacts/
+```
+
+This directory is owned by `pytest-alchemist` for the current target project.
+It stores test run artifacts such as stdout, stderr, and coverage reports.
+Future SQLite databases and other project-level artifacts should also live
+under this directory.
