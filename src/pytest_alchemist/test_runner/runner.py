@@ -51,6 +51,7 @@ def run_tests(
         command.extend(
             [
                 "--cov",
+                "--cov-context=test",
                 f"--cov-report=json:{coverage.coverage_json_path}",
             ]
         )
@@ -58,6 +59,7 @@ def run_tests(
         command.extend(
             [
                 "--cov",
+                "--cov-context=test",
                 f"--cov-report=xml:{coverage.coverage_xml_path}",
             ]
         )
