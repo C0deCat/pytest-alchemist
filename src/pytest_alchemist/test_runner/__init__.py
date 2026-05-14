@@ -1,6 +1,6 @@
 """Test execution infrastructure."""
 
-from pytest_alchemist.test_runner.models import CoverageRunArtifact, TestCase, TestRunResult
-from pytest_alchemist.test_runner.runner import run_tests
+from pytest_alchemist.test_runner.models import TestCase
+from pytest_alchemist.test_runner.runner import TestRunner
 
-__all__ = ["CoverageRunArtifact", "TestCase", "TestRunResult", "run_tests"]
+__all__ = ["TestCase", "TestRunner"]

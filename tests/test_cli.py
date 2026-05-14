@@ -55,14 +55,28 @@ def _create_minimal_project(project_path: Path) -> None:
 
 
 def test_collect_coverage_command() -> None:
-    result = runner.invoke(app, ["collect-coverage"])
+    with runner.isolated_filesystem() as isolated:
+        result = runner.invoke(
+            app,
+            ["collect-coverage", "--project-path", str(Path(isolated))],
+        )
 
     assert result.exit_code == 0
     assert "Collected" in result.output
 
 
 def test_select_tests_command() -> None:
-    result = runner.invoke(app, ["select-tests", "--last-commits", "3"])
+    with runner.isolated_filesystem() as isolated:
+        result = runner.invoke(
+            app,
+            [
+                "select-tests",
+                "--last-commits",
+                "3",
+                "--project-path",
+                str(Path(isolated)),
+            ],
+        )
 
     assert result.exit_code == 0
     assert "Selected tests" in result.output

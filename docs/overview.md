@@ -1,10 +1,9 @@
 # Project Overview
 
 `pytest-alchemist` is organized around a small orchestration layer and several
-focused modules. The current implementation is a deterministic mock skeleton:
-module boundaries and data flow are in place, while real pytest execution,
-coverage parsing, SQLite persistence, git diff analysis, and MOPSO minimization
-are still planned.
+focused modules. The implementation has real pytest execution and SQLite-backed
+test run persistence, while coverage parsing, git diff analysis, and MOPSO
+minimization are still evolving.
 
 ## Module Responsibilities
 
@@ -48,14 +47,16 @@ Dependencies:
 
 ### `pytest_alchemist.test_runner`
 
-Owns test execution infrastructure. In the current skeleton it returns a mocked
-successful result instead of invoking pytest.
+Owns test execution infrastructure. It invokes pytest in the target project and
+saves a structured JSON report for each run.
 
-Future responsibilities:
+Responsibilities:
 
 - execute pytest in the target project environment;
 - run a selected list of pytest node ids;
-- capture exit code, duration, passed and failed counts, and output artifacts.
+- capture exit code, duration, summary counts, per-test results, and output
+  artifacts;
+- return the path to `test_report.json`.
 
 Dependencies:
 
@@ -116,14 +117,15 @@ Dependencies:
 
 ### `pytest_alchemist.database`
 
-Owns persistence-facing APIs. In the current skeleton it is an in-memory facade
-with deterministic mock data.
+Owns persistence-facing APIs. It stores test run metadata, known tests,
+per-test results, and raw coverage artifact references in project-local SQLite.
+Some coverage and change-selection data still uses deterministic mock fallbacks.
 
-Future responsibilities:
+Responsibilities:
 
 - manage SQLite connections and schema;
-- persist coverage records;
-- persist test run history;
+- persist test run history from `test_report.json`;
+- persist known tests and per-test results;
 - expose small repository-style APIs to other modules.
 
 Dependencies:
@@ -148,8 +150,8 @@ Rules:
 
 - `cli` should only depend on `application`.
 - `application` coordinates modules but should not contain algorithmic logic.
-- `test_runner` should not depend on `database`; it returns run results to the
-  application layer.
+- `test_runner` should not depend on `database`; it returns a path to
+  `test_report.json` to the application layer.
 - `minimizer` should not depend on `database`, `coverage_analysis`, or
   `diff_picker`.
 - `database` should expose persistence through a facade or repositories instead
@@ -163,8 +165,9 @@ pytest-alchemist run-minimal --last-commits N
   -> application.run_minimal(N)
   -> diff_picker.pick_candidates(N)
   -> minimizer.minimize(...)
-  -> test_runner.run_tests(...)
-  -> database.save_test_run(...)
+  -> TestRunner.run_tests(...)
+  -> test_report.json
+  -> database.save_test_run(test_report_path)
 ```
 
 The same boundaries should be preserved when mocked components are replaced
@@ -180,6 +183,5 @@ the target project root in:
 ```
 
 This directory is owned by `pytest-alchemist` for the current target project.
-It stores test run artifacts such as stdout, stderr, and coverage reports.
-Future SQLite databases and other project-level artifacts should also live
-under this directory.
+It stores the SQLite database and test run artifacts such as `test_report.json`,
+stdout, stderr, and coverage reports.

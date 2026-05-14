@@ -11,6 +11,7 @@
   pytest-alchemist.sqlite
   test-runs/
     <run-uid>/
+      test_report.json
       stdout.txt
       stderr.txt
       coverage.json
@@ -24,13 +25,14 @@ SQLite хранит индексируемые и нормализованные
 ## Границы ответственности
 
 `database` не должен запускать pytest, читать git diff, парсить coverage.py или
-выполнять статический анализ. Он только принимает уже подготовленные данные от
-`application` и профильных модулей.
+выполнять статический анализ. Для тестовых запусков он принимает ссылку на
+`test_report.json`, читает нормализованные данные и сохраняет их в SQLite.
 
 Ожидаемые публичные операции:
 
-- сохранить запуск тестов;
+- сохранить запуск тестов из `test_report.json`;
 - сохранить coverage-артефакт, связанный с запуском;
+- сохранить результаты отдельных тестов, если они есть в `runned_tests`;
 - вернуть известные тесты и их последние длительности.
 
 SQLite-детали не должны протекать в остальные модули. Снаружи это должен быть
@@ -53,7 +55,7 @@ facade или набор repository-объектов.
 
 ### Список выбранных тестов
 
-Для MVP список node id можно хранить как JSON-строку в `test_runs`:
+Список node id хранится как JSON-строка в `test_runs`:
 
 ```text
 selected_nodeids_json TEXT NOT NULL DEFAULT '[]'
@@ -147,8 +149,8 @@ CREATE TABLE test_results (
 );
 ```
 
-Для MVP эта таблица может появиться позже, если `test_runner` сначала возвращает
-только агрегированные `passed` и `failed`.
+Эта таблица заполняется из `test_report.json -> runned_tests`, когда runner
+собирает per-test результаты через pytest hook.
 
 ### `coverage_artifacts`
 
@@ -213,9 +215,10 @@ Raw artifact полезен для отладки и повторной норм
 Рекомендуемый порядок:
 
 1. Создать SQLite-файл в `.pytest-alchemist-artifacts/pytest-alchemist.sqlite`.
-2. Реализовать `test_runs`, `tests`, `coverage_artifacts`.
-3. Сохранять обычные запуски тестов и пути к stdout/stderr/coverage.
-4. Вернуться к схеме нормализованного coverage после реализации контракта
+2. Реализовать `test_runs`, `tests`, `test_results`, `coverage_artifacts`.
+3. Сохранять обычные запуски тестов и пути к stdout/stderr/coverage/report.
+4. Заполнять `tests` и `test_results` из `runned_tests`.
+5. Вернуться к схеме нормализованного coverage после реализации контракта
    `coverage_analysis`.
 
 Такой порядок позволяет сначала получить рабочую историю запусков и

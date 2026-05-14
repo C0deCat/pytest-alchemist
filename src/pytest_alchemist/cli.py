@@ -1,6 +1,8 @@
 """Command line interface for Pytest Alchemist."""
 
+import json
 from pathlib import Path
+from typing import Any
 from typing import cast
 
 import typer
@@ -27,6 +29,30 @@ def _normalize_coverage_format(value: str | None) -> CoverageFormat | None:
         raise typer.BadParameter("collect coverage must be 'json' or 'xml'.")
 
     return cast(CoverageFormat, normalized)
+
+
+def _load_test_report(test_report_path: str) -> dict[str, Any]:
+    return json.loads(Path(test_report_path).read_text(encoding="utf-8"))
+
+
+def _print_test_report_summary(test_report_path: str) -> None:
+    report = _load_test_report(test_report_path)
+    summary = report["summary"]
+    console.print(
+        f"Run finished: {summary['passed']} passed, {summary['failed']} failed, "
+        f"{summary['skipped']} skipped, exit code {report['exit_code']} "
+        f"in {report['duration_seconds']:.3f}s."
+    )
+
+    pytest_data = report["pytest"]
+    console.print(f"stdout: {pytest_data['stdout_path']}")
+    console.print(f"stderr: {pytest_data['stderr_path']}")
+    coverage = report.get("coverage")
+    if coverage and coverage.get("coverage_json_path"):
+        console.print(f"coverage json: {coverage['coverage_json_path']}")
+    if coverage and coverage.get("coverage_xml_path"):
+        console.print(f"coverage xml: {coverage['coverage_xml_path']}")
+    console.print(f"test report: {test_report_path}")
 
 
 @app.command("collect-coverage")
@@ -68,11 +94,8 @@ def run_minimal(
 ) -> None:
     """Select and run a minimized test set for recent commits."""
 
-    result = _build_application(project_path).run_minimal(last_commits)
-    console.print(
-        f"Run finished: {result.passed} passed, {result.failed} failed, "
-        f"exit code {result.exit_code} in {result.duration_seconds:.3f}s."
-    )
+    test_report_path = _build_application(project_path).run_minimal(last_commits)
+    _print_test_report_summary(test_report_path)
 
 
 @app.command("run-tests")
@@ -80,23 +103,13 @@ def run_tests(
     nodeids: list[str] = typer.Argument(None),
     project_path: Path | None = typer.Option(None, "--project-path"),
     collect_coverage: str | None = typer.Option(None, "--collect-coverage"),
+    collects_tests: bool = typer.Option(True, "--collect-tests/--no-collect-tests"),
 ) -> None:
     """Run pytest tests in the target project."""
 
-    result = _build_application(project_path).run_tests(
+    test_report_path = _build_application(project_path).run_tests(
         tests=nodeids,
         collect_coverage=_normalize_coverage_format(collect_coverage),
+        collects_tests=collects_tests,
     )
-    console.print(
-        f"Run finished: {result.passed} passed, {result.failed} failed, "
-        f"exit code {result.exit_code} in {result.duration_seconds:.3f}s."
-    )
-
-    if result.stdout_path:
-        console.print(f"stdout: {result.stdout_path}")
-    if result.stderr_path:
-        console.print(f"stderr: {result.stderr_path}")
-    if result.coverage and result.coverage.coverage_json_path:
-        console.print(f"coverage json: {result.coverage.coverage_json_path}")
-    if result.coverage and result.coverage.coverage_xml_path:
-        console.print(f"coverage xml: {result.coverage.coverage_xml_path}")
+    _print_test_report_summary(test_report_path)
