@@ -19,6 +19,7 @@ def _write_test_report(
     uid: str = "run-1",
     coverage: dict | None = None,
     runned_tests: dict | None = None,
+    selected_tests: list[str] | None = None,
 ) -> Path:
     run_dir = project_path / ARTIFACTS_DIR_NAME / "test-runs" / uid
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -49,7 +50,9 @@ def _write_test_report(
             "stderr_path": str(stderr_path),
         },
         "selection": {
-            "selected_tests": ["tests/test_sample.py::test_one"],
+            "selected_tests": selected_tests
+            if selected_tests is not None
+            else ["tests/test_sample.py::test_one"],
         },
         "summary": summary,
         "runned_tests": test_results,
@@ -80,12 +83,52 @@ def test_database_facade_creates_sqlite_schema(tmp_path: Path) -> None:
     assert {
         "test_runs",
         "tests",
-        "test_results",
         "coverage_artifacts",
         "coverage_entities",
         "coverage_line_facts",
         "coverage_arc_facts",
     }.issubset(table_names)
+    assert "test_results" not in table_names
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        columns_by_table = {
+            table_name: {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+            }
+            for table_name in (
+                "tests",
+                "coverage_artifacts",
+                "coverage_entities",
+                "coverage_line_facts",
+                "coverage_arc_facts",
+            )
+        }
+
+    assert {
+        "normalized_hash",
+        "current_revision",
+        "last_outcome",
+        "last_error_message",
+    }.issubset(columns_by_table["tests"])
+    assert "run_uid" in columns_by_table["coverage_artifacts"]
+    assert "run_uid" not in columns_by_table["coverage_entities"]
+    assert "run_uid" not in columns_by_table["coverage_line_facts"]
+    assert "run_uid" not in columns_by_table["coverage_arc_facts"]
+    assert "current_revision" in columns_by_table["coverage_entities"]
+    assert {
+        "observed_entity_revision",
+        "observed_test_revision",
+        "last_confirmed_run_uid",
+        "last_confirmed_at",
+    }.issubset(columns_by_table["coverage_line_facts"])
+    assert {
+        "observed_entity_revision",
+        "observed_test_revision",
+        "last_confirmed_run_uid",
+        "last_confirmed_at",
+    }.issubset(columns_by_table["coverage_arc_facts"])
 
 
 def test_save_test_run_persists_run_without_coverage(tmp_path: Path) -> None:
@@ -219,7 +262,6 @@ def test_database_persists_normalized_coverage_facts_idempotently(
     entities = [
         CoverageEntity(
             id=1,
-            run_uid="run-facts",
             file_path="calc.py",
             module_name="calc",
             qualified_name="calc",
@@ -227,11 +269,11 @@ def test_database_persists_normalized_coverage_facts_idempotently(
             start_line=1,
             end_line=5,
             normalized_hash="module-hash",
+            current_revision=1,
             parent_id=None,
         ),
         CoverageEntity(
             id=2,
-            run_uid="run-facts",
             file_path="calc.py",
             module_name="calc",
             qualified_name="calc.add",
@@ -239,12 +281,12 @@ def test_database_persists_normalized_coverage_facts_idempotently(
             start_line=1,
             end_line=2,
             normalized_hash="function-hash",
+            current_revision=1,
             parent_id=1,
         ),
     ]
     line_facts = [
         CoverageLineFact(
-            run_uid="run-facts",
             nodeid="tests/test_calc.py::test_add",
             phase="run",
             entity_id=2,
@@ -254,7 +296,6 @@ def test_database_persists_normalized_coverage_facts_idempotently(
     ]
     arc_facts = [
         CoverageArcFact(
-            run_uid="run-facts",
             nodeid="tests/test_calc.py::test_add",
             phase="run",
             entity_id=2,
@@ -270,13 +311,11 @@ def test_database_persists_normalized_coverage_facts_idempotently(
     database.replace_coverage_facts("run-facts", entities, line_facts, arc_facts)
     database.replace_coverage_facts("run-facts", entities, line_facts, arc_facts)
 
-    tests = database.list_coverage_tests("run-facts")
+    tests = database.list_coverage_tests()
     covered_entities = database.list_entities_covered_by_test(
-        "run-facts",
         "tests/test_calc.py::test_add",
     )
     arcs = database.list_arcs_covered_by_test(
-        "run-facts",
         "tests/test_calc.py::test_add",
     )
 
@@ -291,20 +330,47 @@ def test_database_persists_normalized_coverage_facts_idempotently(
             "SELECT quality, has_contexts, has_arcs FROM coverage_artifacts"
         ).fetchone()
         entity_count = connection.execute(
-            "SELECT COUNT(*) FROM coverage_entities WHERE run_uid = 'run-facts'"
+            "SELECT COUNT(*) FROM coverage_entities"
         ).fetchone()[0]
-        line_count = connection.execute(
-            "SELECT COUNT(*) FROM coverage_line_facts WHERE run_uid = 'run-facts'"
-        ).fetchone()[0]
+        line_fact = connection.execute(
+            """
+            SELECT
+              observed_entity_revision,
+              observed_test_revision,
+              last_confirmed_run_uid,
+              last_confirmed_at
+            FROM coverage_line_facts
+            """
+        ).fetchone()
+        line_count = connection.execute("SELECT COUNT(*) FROM coverage_line_facts").fetchone()[0]
 
     assert artifact["quality"] == "complete"
     assert artifact["has_contexts"] == 1
     assert artifact["has_arcs"] == 1
     assert entity_count == 2
     assert line_count == 1
+    assert line_fact["observed_entity_revision"] == 1
+    assert line_fact["observed_test_revision"] == 1
+    assert line_fact["last_confirmed_run_uid"] == "run-facts"
+    assert line_fact["last_confirmed_at"]
 
 
-def test_save_test_run_upserts_tests_and_results(tmp_path: Path) -> None:
+def test_save_test_run_upserts_latest_test_state(tmp_path: Path) -> None:
+    tests_path = tmp_path / "tests"
+    tests_path.mkdir()
+    (tests_path / "test_sample.py").write_text(
+        "\n".join(
+            [
+                "def test_one():",
+                "    assert True",
+                "",
+                "def test_two():",
+                "    assert False",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     database = DatabaseFacade(project_path=tmp_path)
     report_path = _write_test_report(
         tmp_path,
@@ -328,20 +394,101 @@ def test_save_test_run_upserts_tests_and_results(tmp_path: Path) -> None:
     with sqlite3.connect(database.database_path) as connection:
         connection.row_factory = sqlite3.Row
         test = connection.execute(
-            "SELECT nodeid, file_path, last_seen_run_uid, last_duration_ms FROM tests WHERE nodeid = ?",
+            """
+            SELECT
+              nodeid,
+              file_path,
+              normalized_hash,
+              current_revision,
+              last_seen_run_uid,
+              last_duration_ms,
+              last_outcome,
+              last_error_message
+            FROM tests
+            WHERE nodeid = ?
+            """,
             ("tests/test_sample.py::test_one",),
         ).fetchone()
-        results = connection.execute(
-            "SELECT nodeid, outcome, duration_ms FROM test_results WHERE run_uid = ?",
-            ("run-tests",),
+        tests = connection.execute(
+            """
+            SELECT nodeid, last_outcome, last_duration_ms, last_error_message
+            FROM tests
+            ORDER BY nodeid
+            """
         ).fetchall()
 
     assert test["nodeid"] == "tests/test_sample.py::test_one"
     assert test["file_path"] == "tests/test_sample.py"
+    assert test["normalized_hash"]
+    assert test["current_revision"] == 1
     assert test["last_seen_run_uid"] == "run-tests"
     assert test["last_duration_ms"] == 250
-    results_by_nodeid = {result["nodeid"]: result for result in results}
-    assert results_by_nodeid["tests/test_sample.py::test_one"]["outcome"] == "passed"
-    assert results_by_nodeid["tests/test_sample.py::test_one"]["duration_ms"] == 250
-    assert results_by_nodeid["tests/test_sample.py::test_two"]["outcome"] == "failed"
-    assert results_by_nodeid["tests/test_sample.py::test_two"]["duration_ms"] == 125
+    assert test["last_outcome"] == "passed"
+    assert test["last_error_message"] is None
+    tests_by_nodeid = {test_row["nodeid"]: test_row for test_row in tests}
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_outcome"] == "passed"
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_duration_ms"] == 250
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_error_message"] is None
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_outcome"] == "failed"
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_duration_ms"] == 125
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_error_message"] is None
+
+
+def test_save_test_run_keeps_latest_known_state_for_tests_not_in_partial_run(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseFacade(project_path=tmp_path)
+    full_run_path = _write_test_report(
+        tmp_path,
+        uid="run-full",
+        runned_tests={
+            "tests/test_sample.py::test_one": {
+                "nodeid": "tests/test_sample.py::test_one",
+                "outcome": "passed",
+                "duration_ms": 250,
+            },
+            "tests/test_sample.py::test_two": {
+                "nodeid": "tests/test_sample.py::test_two",
+                "outcome": "failed",
+                "duration_ms": 125,
+            },
+        },
+        selected_tests=[],
+    )
+    partial_run_path = _write_test_report(
+        tmp_path,
+        uid="run-partial",
+        runned_tests={
+            "tests/test_sample.py::test_one": {
+                "nodeid": "tests/test_sample.py::test_one",
+                "outcome": "failed",
+                "duration_ms": 275,
+            },
+        },
+        selected_tests=["tests/test_sample.py::test_one"],
+    )
+
+    database.save_test_run(full_run_path)
+    database.save_test_run(partial_run_path)
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        tests = connection.execute(
+            """
+            SELECT nodeid, last_seen_run_uid, last_outcome, last_duration_ms
+            FROM tests
+            ORDER BY nodeid
+            """
+        ).fetchall()
+
+    tests_by_nodeid = {test["nodeid"]: test for test in tests}
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_seen_run_uid"] == (
+        "run-partial"
+    )
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_outcome"] == "failed"
+    assert tests_by_nodeid["tests/test_sample.py::test_one"]["last_duration_ms"] == 275
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_seen_run_uid"] == (
+        "run-full"
+    )
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_outcome"] == "failed"
+    assert tests_by_nodeid["tests/test_sample.py::test_two"]["last_duration_ms"] == 125

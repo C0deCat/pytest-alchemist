@@ -104,7 +104,6 @@ class CoverageAnalyzer:
 
             try:
                 file_index = build_file_entity_index(
-                    run_uid,
                     project_root,
                     source_path,
                     start_id=next_entity_id,
@@ -123,7 +122,6 @@ class CoverageAnalyzer:
                     entity = file_index.entity_for_line(raw_line)
                     line_facts.append(
                         CoverageLineFact(
-                            run_uid=run_uid,
                             nodeid=nodeid,
                             phase=phase,
                             entity_id=entity.id or 0,
@@ -139,7 +137,6 @@ class CoverageAnalyzer:
                     to_offset = _line_offset(entity, to_line)
                     arc_facts.append(
                         CoverageArcFact(
-                            run_uid=run_uid,
                             nodeid=nodeid,
                             phase=phase,
                             entity_id=entity.id or 0,
@@ -238,7 +235,6 @@ class _FileEntityIndex:
 
 
 def build_file_entity_index(
-    run_uid: str,
     project_root: Path,
     source_path: Path,
     start_id: int = 1,
@@ -253,7 +249,6 @@ def build_file_entity_index(
     line_count = max(1, len(source.splitlines()))
     module_entity = CoverageEntity(
         id=start_id,
-        run_uid=run_uid,
         file_path=relative_file,
         module_name=module_name,
         qualified_name=module_name,
@@ -261,10 +256,10 @@ def build_file_entity_index(
         start_line=1,
         end_line=line_count,
         normalized_hash=_hash_text(source),
+        current_revision=1,
         parent_id=None,
     )
     visitor = _EntityVisitor(
-        run_uid=run_uid,
         relative_file=relative_file,
         module_name=module_name,
         wrapper=wrapper,
@@ -281,14 +276,12 @@ class _EntityVisitor(cst.CSTVisitor):
     def __init__(
         self,
         *,
-        run_uid: str,
         relative_file: str,
         module_name: str,
         wrapper: MetadataWrapper,
         first_entity: CoverageEntity,
         next_id: int,
     ) -> None:
-        self.run_uid = run_uid
         self.relative_file = relative_file
         self.module_name = module_name
         self.wrapper = wrapper
@@ -325,7 +318,6 @@ class _EntityVisitor(cst.CSTVisitor):
         position = self.get_metadata(PositionProvider, node)
         entity = CoverageEntity(
             id=self._next_id,
-            run_uid=self.run_uid,
             file_path=self.relative_file,
             module_name=self.module_name,
             qualified_name=qualified_name,
@@ -333,6 +325,7 @@ class _EntityVisitor(cst.CSTVisitor):
             start_line=position.start.line,
             end_line=position.end.line,
             normalized_hash=_hash_node(self.wrapper, node, position),
+            current_revision=1,
             parent_id=parent_id,
         )
         self.entities.append(entity)

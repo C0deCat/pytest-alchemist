@@ -66,7 +66,7 @@ def test_build_file_entity_index_maps_lines_to_smallest_symbol(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    index = build_file_entity_index("run-1", tmp_path, source_path)
+    index = build_file_entity_index(tmp_path, source_path)
 
     assert index.entity_for_line(1).kind == "module"
     assert index.entity_for_line(3).qualified_name == "app.users.outer"
@@ -118,17 +118,15 @@ def test_coverage_analyzer_persists_context_entities_lines_and_arcs(
     assert result.line_fact_count > 0
     assert result.arc_fact_count > 0
     assert "calc.py" in result.covered_files
-    assert database.list_coverage_tests(result.run_uid or "") == [
+    assert database.list_coverage_tests() == [
         "tests/test_calc.py::test_positive"
     ]
 
     entities = database.list_entities_covered_by_test(
-        result.run_uid or "",
         "tests/test_calc.py::test_positive",
     )
     assert any(entity.qualified_name == "calc.classify" for entity in entities)
     assert database.list_arcs_covered_by_test(
-        result.run_uid or "",
         "tests/test_calc.py::test_positive",
     )
 

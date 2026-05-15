@@ -118,14 +118,15 @@ Dependencies:
 ### `pytest_alchemist.database`
 
 Owns persistence-facing APIs. It stores test run metadata, known tests,
-per-test results, and raw coverage artifact references in project-local SQLite.
+latest known per-test state, and raw coverage artifact references in
+project-local SQLite.
 Some coverage and change-selection data still uses deterministic mock fallbacks.
 
 Responsibilities:
 
 - manage SQLite connections and schema;
 - persist test run history from `test_report.json`;
-- persist known tests and per-test results;
+- persist known tests and their latest known results;
 - expose small repository-style APIs to other modules.
 
 Dependencies:

@@ -57,7 +57,6 @@ class CoverageEntity:
     """Normalized code entity observed during coverage collection."""
 
     id: int | None
-    run_uid: str
     file_path: str
     module_name: str | None
     qualified_name: str | None
@@ -65,6 +64,7 @@ class CoverageEntity:
     start_line: int | None
     end_line: int | None
     normalized_hash: str | None
+    current_revision: int
     parent_id: int | None
 
 
@@ -72,7 +72,6 @@ class CoverageEntity:
 class CoverageLineFact:
     """A test context executed a line within a normalized entity."""
 
-    run_uid: str
     nodeid: str
     phase: str
     entity_id: int
@@ -84,7 +83,6 @@ class CoverageLineFact:
 class CoverageArcFact:
     """A test context executed a branch arc within a normalized entity."""
 
-    run_uid: str
     nodeid: str
     phase: str
     entity_id: int

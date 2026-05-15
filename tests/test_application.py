@@ -190,8 +190,12 @@ def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:
             "SELECT run_uid, format, path FROM coverage_artifacts WHERE run_uid = ?",
             (report["uid"],),
         ).fetchall()
-        test_result = connection.execute(
-            "SELECT run_uid, nodeid, outcome FROM test_results WHERE run_uid = ?",
+        test = connection.execute(
+            """
+            SELECT last_seen_run_uid, nodeid, last_outcome
+            FROM tests
+            WHERE last_seen_run_uid = ?
+            """,
             (report["uid"],),
         ).fetchone()
 
@@ -205,9 +209,9 @@ def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:
     assert Path(artifacts_by_format["json"]["path"]).exists()
     assert artifacts_by_format["sqlite"]["run_uid"] == report["uid"]
     assert Path(artifacts_by_format["sqlite"]["path"]).exists()
-    assert test_result is not None
-    assert test_result["run_uid"] == report["uid"]
-    assert test_result["outcome"] == "passed"
+    assert test is not None
+    assert test["last_seen_run_uid"] == report["uid"]
+    assert test["last_outcome"] == "passed"
 
 
 def test_minimizer_uses_input_data_without_database() -> None:

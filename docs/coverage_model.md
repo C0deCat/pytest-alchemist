@@ -271,8 +271,8 @@ needs to preserve branch identity in a way other models can interpret later.
 
 ## Storage Shape
 
-The exact database schema can evolve, but the model should separate raw
-artifacts from normalized facts.
+The exact database schema can evolve, but the model should separate historical
+raw artifacts from the maintained current normalized coverage index.
 
 ### Raw Artifact Record
 
@@ -296,7 +296,6 @@ Suggested conceptual table:
 ```sql
 CREATE TABLE coverage_entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_uid TEXT NOT NULL,
   file_path TEXT NOT NULL,
   module_name TEXT,
   qualified_name TEXT,
@@ -304,6 +303,7 @@ CREATE TABLE coverage_entities (
   start_line INTEGER,
   end_line INTEGER,
   normalized_hash TEXT,
+  current_revision INTEGER NOT NULL DEFAULT 1,
   parent_id INTEGER
 );
 ```
@@ -314,13 +314,16 @@ Suggested conceptual table:
 
 ```sql
 CREATE TABLE coverage_line_facts (
-  run_uid TEXT NOT NULL,
   nodeid TEXT NOT NULL,
   phase TEXT NOT NULL,
   entity_id INTEGER NOT NULL,
   raw_line INTEGER NOT NULL,
   entity_line_offset INTEGER,
-  PRIMARY KEY (run_uid, nodeid, phase, entity_id, raw_line)
+  observed_entity_revision INTEGER NOT NULL,
+  observed_test_revision INTEGER NOT NULL,
+  last_confirmed_run_uid TEXT NOT NULL,
+  last_confirmed_at TEXT NOT NULL,
+  PRIMARY KEY (nodeid, phase, entity_id, raw_line)
 );
 ```
 
@@ -330,7 +333,6 @@ Suggested conceptual table:
 
 ```sql
 CREATE TABLE coverage_arc_facts (
-  run_uid TEXT NOT NULL,
   nodeid TEXT NOT NULL,
   phase TEXT NOT NULL,
   entity_id INTEGER NOT NULL,
@@ -339,8 +341,11 @@ CREATE TABLE coverage_arc_facts (
   from_offset INTEGER,
   to_offset INTEGER,
   arc_hash TEXT,
+  observed_entity_revision INTEGER NOT NULL,
+  observed_test_revision INTEGER NOT NULL,
+  last_confirmed_run_uid TEXT NOT NULL,
+  last_confirmed_at TEXT NOT NULL,
   PRIMARY KEY (
-    run_uid,
     nodeid,
     phase,
     entity_id,
@@ -352,6 +357,28 @@ CREATE TABLE coverage_arc_facts (
 
 These tables describe collection facts only. They do not contain selection
 scores, risk scores, or minimizer decisions.
+
+### Freshness
+
+Normalized coverage is the current project-level index, not a run snapshot.
+Each entity and test has a normalized hash plus a `current_revision`. Each line
+or arc fact records the entity and test revisions that were current when the
+fact was last confirmed, along with the confirming run and timestamp.
+
+A fact is fresh when:
+
+```text
+fact.observed_entity_revision == entity.current_revision
+fact.observed_test_revision == test.current_revision
+```
+
+For tests, the normalized hash is derived from the logical test body rather than
+the containing file so unrelated edits in the same test module do not have to
+invalidate every test in it.
+
+The current implementation still replaces the whole normalized snapshot after a
+full coverage collection. Revision bumping, stale-fact filtering, and partial
+refresh are planned maintenance behavior for a later polishing stage.
 
 ## Survivability Strategy
 
@@ -373,7 +400,8 @@ line offset inside symbol: 8
 arc hash inside symbol: normalized from/to block identity
 ```
 
-When a new commit is analyzed, the coverage model can maintain old facts by
+When a later polishing stage introduces incremental maintenance, the coverage
+model can maintain old facts by
 trying anchors in this order:
 
 1. same project-relative file path and qualified name;
@@ -417,10 +445,10 @@ partial
 The coverage model should expose factual query operations such as:
 
 - get coverage artifact metadata for a run;
-- list tests observed in coverage contexts for a run;
-- list entities covered by a test in a run;
-- list tests that covered an entity in a run;
-- list arcs covered by a test in a run;
+- list current tests observed in coverage contexts;
+- list current entities covered by a test;
+- list current tests that covered an entity;
+- list current arcs covered by a test;
 - list historical observations for an entity;
 - report artifact quality and missing capabilities.
 

@@ -1,7 +1,8 @@
 # Database
 
-`database` отвечает за долговременное хранение истории запусков, результатов
-тестов и ссылок на артефакты, которые создают другие модули.
+`database` отвечает за долговременное хранение истории запусков, последнего
+известного состояния тестов, ссылок на артефакты и текущего нормализованного
+индекса покрытия.
 
 На первом этапе база должна быть простой SQLite-базой внутри директории
 целевого проекта:
@@ -32,8 +33,10 @@ SQLite хранит индексируемые и нормализованные
 
 - сохранить запуск тестов из `test_report.json`;
 - сохранить coverage-артефакт, связанный с запуском;
-- сохранить результаты отдельных тестов, если они есть в `runned_tests`;
-- вернуть известные тесты и их последние длительности.
+- сохранить последнее известное состояние отдельных тестов, если оно есть в
+  `runned_tests`;
+- вернуть известные тесты, их последние длительности и исходы;
+- хранить текущий нормализованный индекс покрытия отдельно от истории запусков.
 
 SQLite-детали не должны протекать в остальные модули. Снаружи это должен быть
 facade или набор repository-объектов.
@@ -65,9 +68,9 @@ selected_nodeids_json TEXT NOT NULL DEFAULT '[]'
 `test_runner`: `tests=None` или пустой список не ограничивает pytest по node id.
 
 Если позже понадобится часто искать запуски по конкретному тесту, можно добавить
-таблицу `test_run_items`. Для первичной схемы достаточно JSON-поля и отдельной
-таблицы результатов тестов, если pytest начнет возвращать подробные результаты
-по test case.
+таблицу `test_run_items`. Для первичной схемы достаточно JSON-поля, потому что
+текущая продуктовая модель хранит только последнее известное состояние каждого
+теста.
 
 ### Coverage flag
 
@@ -78,9 +81,9 @@ selected_nodeids_json TEXT NOT NULL DEFAULT '[]'
 детализации и отдельные источники данных, поэтому на текущем этапе
 `test_runs` должен хранить только признак включенного сбора.
 
-До реализации модуля coverage база должна фиксировать только raw artifact через
-`coverage_artifacts`. Нормализованная схема покрытия будет спроектирована
-отдельно, когда станет понятен контракт `coverage_analysis`.
+`coverage_artifacts` остаётся историческим слоем, связанным с конкретным
+запуском. Нормализованные сущности и факты покрытия являются отдельным текущим
+индексом проекта, который используют алгоритмы выбора тестов.
 
 ## Предлагаемая схема
 
@@ -121,8 +124,12 @@ CREATE TABLE test_runs (
 CREATE TABLE tests (
   nodeid TEXT PRIMARY KEY,
   file_path TEXT NOT NULL,
+  normalized_hash TEXT,
+  current_revision INTEGER NOT NULL DEFAULT 1,
   last_seen_run_uid TEXT,
   last_duration_ms INTEGER,
+  last_outcome TEXT,
+  last_error_message TEXT,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   FOREIGN KEY (last_seen_run_uid) REFERENCES test_runs(uid)
@@ -130,27 +137,11 @@ CREATE TABLE tests (
 ```
 
 Эта таблица нужна `diff_picker` и `minimizer`, чтобы получать кандидатов и
-примерную длительность тестов без чтения всех исторических запусков.
-
-### `test_results`
-
-Хранит результат отдельного теста внутри запуска, когда эта информация доступна.
-
-```sql
-CREATE TABLE test_results (
-  run_uid TEXT NOT NULL,
-  nodeid TEXT NOT NULL,
-  outcome TEXT NOT NULL,
-  duration_ms INTEGER,
-  error_message TEXT,
-  PRIMARY KEY (run_uid, nodeid),
-  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
-  FOREIGN KEY (nodeid) REFERENCES tests(nodeid)
-);
-```
-
-Эта таблица заполняется из `test_report.json -> runned_tests`, когда runner
-собирает per-test результаты через pytest hook.
+примерную длительность тестов без чтения всех исторических запусков. Она
+хранит последнее известное состояние каждого теста, а не снимок последнего
+глобального запуска: частичный запуск обновляет только реально выполненные
+тесты. Пока runner не передает текст ошибки по test case, `last_error_message`
+остаётся `NULL`.
 
 ### `coverage_artifacts`
 
@@ -176,9 +167,11 @@ Raw artifact полезен для отладки и повторной норм
 
 ## Как хранить coverage
 
-До реализации `coverage_analysis` database-модуль не должен фиксировать
-нормализованную схему покрытия. Сейчас достаточно сохранить связь запуска с
-исходным coverage-артефактом.
+Coverage хранится в двух слоях:
+
+- `coverage_artifacts` — исторические raw-артефакты, связанные с запуском;
+- нормализованные таблицы — текущий проектный индекс покрытия без привязки к
+  конкретному запуску.
 
 ### Raw coverage artifact
 
@@ -198,6 +191,63 @@ Raw artifact полезен для отладки и повторной норм
 
 Поэтому raw artifact должен быть архивным источником, а не основной моделью.
 
+### Текущий нормализованный индекс
+
+```sql
+CREATE TABLE coverage_entities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT NOT NULL,
+  module_name TEXT,
+  qualified_name TEXT,
+  kind TEXT NOT NULL,
+  start_line INTEGER,
+  end_line INTEGER,
+  normalized_hash TEXT,
+  current_revision INTEGER NOT NULL DEFAULT 1,
+  parent_id INTEGER,
+  FOREIGN KEY (parent_id) REFERENCES coverage_entities(id)
+);
+
+CREATE TABLE coverage_line_facts (
+  nodeid TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  raw_line INTEGER NOT NULL,
+  entity_line_offset INTEGER,
+  observed_entity_revision INTEGER NOT NULL,
+  observed_test_revision INTEGER NOT NULL,
+  last_confirmed_run_uid TEXT NOT NULL,
+  last_confirmed_at TEXT NOT NULL,
+  PRIMARY KEY (nodeid, phase, entity_id, raw_line),
+  FOREIGN KEY (last_confirmed_run_uid) REFERENCES test_runs(uid),
+  FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
+);
+
+CREATE TABLE coverage_arc_facts (
+  nodeid TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  from_line INTEGER NOT NULL,
+  to_line INTEGER NOT NULL,
+  from_offset INTEGER,
+  to_offset INTEGER,
+  arc_hash TEXT NOT NULL,
+  observed_entity_revision INTEGER NOT NULL,
+  observed_test_revision INTEGER NOT NULL,
+  last_confirmed_run_uid TEXT NOT NULL,
+  last_confirmed_at TEXT NOT NULL,
+  PRIMARY KEY (nodeid, phase, entity_id, from_line, to_line),
+  FOREIGN KEY (last_confirmed_run_uid) REFERENCES test_runs(uid),
+  FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
+);
+```
+
+Факт покрытия считается свежим, когда зафиксированные в нём ревизии сущности и
+теста совпадают с их текущими ревизиями. Для тестов `normalized_hash` строится по
+телу конкретного теста, а не по всему файлу. На текущем этапе полный сбор
+coverage просто целиком заменяет этот индекс; частичное обновление и повышение
+ревизий будут добавлены позже.
+
 ## Почему не хранить все coverage в `test_runs`
 
 `test_runs.coverage` как boolean полезен, но не должен становиться контейнером
@@ -207,23 +257,22 @@ Raw artifact полезен для отладки и повторной норм
 
 - у одного запуска может быть несколько coverage-артефактов;
 - raw coverage и нормализованное coverage имеют разные форматы и жизненный цикл;
-- будущая нормализованная схема coverage должна зависеть от реального контракта
-  `coverage_analysis`, а не от предположений текущего database-документа.
+- нормализованный coverage имеет собственный жизненный цикл и должен жить
+  отдельно от истории запусков.
 
 ## MVP-порядок реализации
 
 Рекомендуемый порядок:
 
 1. Создать SQLite-файл в `.pytest-alchemist-artifacts/pytest-alchemist.sqlite`.
-2. Реализовать `test_runs`, `tests`, `test_results`, `coverage_artifacts`.
+2. Реализовать `test_runs`, `tests`, `coverage_artifacts`.
 3. Сохранять обычные запуски тестов и пути к stdout/stderr/coverage/report.
-4. Заполнять `tests` и `test_results` из `runned_tests`.
-5. Вернуться к схеме нормализованного coverage после реализации контракта
-   `coverage_analysis`.
+4. Обновлять последнее известное состояние в `tests` из `runned_tests`.
+5. Поддерживать текущий нормализованный индекс coverage как полную заменяемую
+   снимком структуру до появления частичных обновлений.
 
-Такой порядок позволяет сначала получить рабочую историю запусков и
-сохранение артефактов, а затем проектировать coverage-хранилище на основании
-реальных данных.
+Такой порядок сохраняет историю запусков и текущий индекс покрытия раздельно,
+пока проект ещё не нуждается в частичном обновлении покрытия.
 
 ## Открытые вопросы
 
@@ -235,3 +284,5 @@ Raw artifact полезен для отладки и повторной норм
 - Нужно ли сразу поддерживать несколько source roots?
 - Как долго хранить старые `test-runs` и когда чистить связанные записи из
   базы?
+- Как именно сопоставлять сущности после перемещений и переименований перед
+  частичным обновлением покрытия?

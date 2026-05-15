@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import ast
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,23 +146,15 @@ class DatabaseFacade:
         line_facts: list[CoverageLineFact],
         arc_facts: list[CoverageArcFact],
     ) -> None:
-        """Replace normalized coverage facts for one run."""
+        """Replace the project's current normalized coverage snapshot."""
 
         with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM coverage_arc_facts WHERE run_uid = ?",
-                (run_uid,),
-            )
-            connection.execute(
-                "DELETE FROM coverage_line_facts WHERE run_uid = ?",
-                (run_uid,),
-            )
-            connection.execute(
-                "DELETE FROM coverage_entities WHERE run_uid = ?",
-                (run_uid,),
-            )
+            connection.execute("DELETE FROM coverage_arc_facts")
+            connection.execute("DELETE FROM coverage_line_facts")
+            connection.execute("DELETE FROM coverage_entities")
 
             entity_id_map: dict[int, int] = {}
+            entity_revision_map: dict[int, int] = {}
             for entity in entities:
                 parent_id = (
                     entity_id_map[entity.parent_id]
@@ -171,7 +164,6 @@ class DatabaseFacade:
                 cursor = connection.execute(
                     """
                     INSERT INTO coverage_entities (
-                      run_uid,
                       file_path,
                       module_name,
                       qualified_name,
@@ -179,12 +171,12 @@ class DatabaseFacade:
                       start_line,
                       end_line,
                       normalized_hash,
+                      current_revision,
                       parent_id
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        entity.run_uid,
                         entity.file_path,
                         entity.module_name,
                         entity.qualified_name,
@@ -192,40 +184,56 @@ class DatabaseFacade:
                         entity.start_line,
                         entity.end_line,
                         entity.normalized_hash,
+                        entity.current_revision,
                         parent_id,
                     ),
                 )
                 if entity.id is not None:
                     entity_id_map[entity.id] = int(cursor.lastrowid)
+                    entity_revision_map[entity.id] = entity.current_revision
 
+            now = _timestamp()
             for fact in line_facts:
+                observed_test_revision = self._current_test_revision(
+                    connection,
+                    fact.nodeid,
+                )
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO coverage_line_facts (
-                      run_uid,
                       nodeid,
                       phase,
                       entity_id,
                       raw_line,
-                      entity_line_offset
+                      entity_line_offset,
+                      observed_entity_revision,
+                      observed_test_revision,
+                      last_confirmed_run_uid,
+                      last_confirmed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        fact.run_uid,
                         fact.nodeid,
                         fact.phase,
                         entity_id_map[fact.entity_id],
                         fact.raw_line,
                         fact.entity_line_offset,
+                        entity_revision_map[fact.entity_id],
+                        observed_test_revision,
+                        run_uid,
+                        now,
                     ),
                 )
 
             for fact in arc_facts:
+                observed_test_revision = self._current_test_revision(
+                    connection,
+                    fact.nodeid,
+                )
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO coverage_arc_facts (
-                      run_uid,
                       nodeid,
                       phase,
                       entity_id,
@@ -233,12 +241,15 @@ class DatabaseFacade:
                       to_line,
                       from_offset,
                       to_offset,
-                      arc_hash
+                      arc_hash,
+                      observed_entity_revision,
+                      observed_test_revision,
+                      last_confirmed_run_uid,
+                      last_confirmed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        fact.run_uid,
                         fact.nodeid,
                         fact.phase,
                         entity_id_map[fact.entity_id],
@@ -247,30 +258,32 @@ class DatabaseFacade:
                         fact.from_offset,
                         fact.to_offset,
                         fact.arc_hash,
+                        entity_revision_map[fact.entity_id],
+                        observed_test_revision,
+                        run_uid,
+                        now,
                     ),
                 )
 
-    def list_coverage_tests(self, run_uid: str) -> list[str]:
-        """Return test node ids observed in normalized coverage facts."""
+    def list_coverage_tests(self) -> list[str]:
+        """Return test node ids observed in current normalized coverage facts."""
 
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT nodeid FROM coverage_line_facts WHERE run_uid = ?
+                SELECT nodeid FROM coverage_line_facts
                 UNION
-                SELECT nodeid FROM coverage_arc_facts WHERE run_uid = ?
+                SELECT nodeid FROM coverage_arc_facts
                 ORDER BY nodeid
                 """,
-                (run_uid, run_uid),
             ).fetchall()
         return [row["nodeid"] for row in rows]
 
     def list_entities_covered_by_test(
         self,
-        run_uid: str,
         nodeid: str,
     ) -> list[CoverageEntity]:
-        """Return entities covered by a test in one run."""
+        """Return current entities covered by a test."""
 
         with self._connect() as connection:
             rows = connection.execute(
@@ -280,15 +293,15 @@ class DatabaseFacade:
                 WHERE e.id IN (
                   SELECT entity_id
                   FROM coverage_line_facts
-                  WHERE run_uid = ? AND nodeid = ?
+                  WHERE nodeid = ?
                   UNION
                   SELECT entity_id
                   FROM coverage_arc_facts
-                  WHERE run_uid = ? AND nodeid = ?
+                  WHERE nodeid = ?
                 )
                 ORDER BY e.file_path, e.start_line, e.qualified_name
                 """,
-                (run_uid, nodeid, run_uid, nodeid),
+                (nodeid, nodeid),
             ).fetchall()
         return [_entity_from_row(row) for row in rows]
 
@@ -309,20 +322,19 @@ class DatabaseFacade:
 
     def list_arcs_covered_by_test(
         self,
-        run_uid: str,
         nodeid: str,
     ) -> list[CoverageArcFact]:
-        """Return branch arcs covered by a test in one run."""
+        """Return current branch arcs covered by a test."""
 
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT *
                 FROM coverage_arc_facts
-                WHERE run_uid = ? AND nodeid = ?
+                WHERE nodeid = ?
                 ORDER BY entity_id, from_line, to_line
                 """,
-                (run_uid, nodeid),
+                (nodeid,),
             ).fetchall()
         return [_arc_fact_from_row(row) for row in rows]
 
@@ -335,6 +347,7 @@ class DatabaseFacade:
         coverage = report.get("coverage")
         runned_tests = report.get("runned_tests", {})
         run_uid = report["uid"]
+        project_root = Path(report["project_root"])
         now = _timestamp()
         selected_nodeids = report["selection"]["selected_tests"]
         coverage_enabled = int(coverage is not None)
@@ -388,27 +401,11 @@ class DatabaseFacade:
                     connection,
                     nodeid,
                     run_uid,
+                    project_root,
                     test_duration_ms,
+                    test_result["outcome"],
+                    None,
                     now,
-                )
-                connection.execute(
-                    """
-                    INSERT OR REPLACE INTO test_results (
-                      run_uid,
-                      nodeid,
-                      outcome,
-                      duration_ms,
-                      error_message
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        run_uid,
-                        nodeid,
-                        test_result["outcome"],
-                        test_duration_ms,
-                        None,
-                    ),
                 )
 
             for artifact_format, artifact_path in _coverage_paths(report):
@@ -460,22 +457,15 @@ class DatabaseFacade:
                 CREATE TABLE IF NOT EXISTS tests (
                   nodeid TEXT PRIMARY KEY,
                   file_path TEXT NOT NULL,
+                  normalized_hash TEXT,
+                  current_revision INTEGER NOT NULL DEFAULT 1,
                   last_seen_run_uid TEXT,
                   last_duration_ms INTEGER,
+                  last_outcome TEXT,
+                  last_error_message TEXT,
                   first_seen_at TEXT NOT NULL,
                   last_seen_at TEXT NOT NULL,
                   FOREIGN KEY (last_seen_run_uid) REFERENCES test_runs(uid)
-                );
-
-                CREATE TABLE IF NOT EXISTS test_results (
-                  run_uid TEXT NOT NULL,
-                  nodeid TEXT NOT NULL,
-                  outcome TEXT NOT NULL,
-                  duration_ms INTEGER,
-                  error_message TEXT,
-                  PRIMARY KEY (run_uid, nodeid),
-                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
-                  FOREIGN KEY (nodeid) REFERENCES tests(nodeid)
                 );
 
                 CREATE TABLE IF NOT EXISTS coverage_artifacts (
@@ -494,7 +484,6 @@ class DatabaseFacade:
 
                 CREATE TABLE IF NOT EXISTS coverage_entities (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  run_uid TEXT NOT NULL,
                   file_path TEXT NOT NULL,
                   module_name TEXT,
                   qualified_name TEXT,
@@ -502,25 +491,27 @@ class DatabaseFacade:
                   start_line INTEGER,
                   end_line INTEGER,
                   normalized_hash TEXT,
+                  current_revision INTEGER NOT NULL DEFAULT 1,
                   parent_id INTEGER,
-                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
                   FOREIGN KEY (parent_id) REFERENCES coverage_entities(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS coverage_line_facts (
-                  run_uid TEXT NOT NULL,
                   nodeid TEXT NOT NULL,
                   phase TEXT NOT NULL,
                   entity_id INTEGER NOT NULL,
                   raw_line INTEGER NOT NULL,
                   entity_line_offset INTEGER,
-                  PRIMARY KEY (run_uid, nodeid, phase, entity_id, raw_line),
-                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
+                  observed_entity_revision INTEGER NOT NULL,
+                  observed_test_revision INTEGER NOT NULL,
+                  last_confirmed_run_uid TEXT NOT NULL,
+                  last_confirmed_at TEXT NOT NULL,
+                  PRIMARY KEY (nodeid, phase, entity_id, raw_line),
+                  FOREIGN KEY (last_confirmed_run_uid) REFERENCES test_runs(uid),
                   FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS coverage_arc_facts (
-                  run_uid TEXT NOT NULL,
                   nodeid TEXT NOT NULL,
                   phase TEXT NOT NULL,
                   entity_id INTEGER NOT NULL,
@@ -529,15 +520,18 @@ class DatabaseFacade:
                   from_offset INTEGER,
                   to_offset INTEGER,
                   arc_hash TEXT NOT NULL,
+                  observed_entity_revision INTEGER NOT NULL,
+                  observed_test_revision INTEGER NOT NULL,
+                  last_confirmed_run_uid TEXT NOT NULL,
+                  last_confirmed_at TEXT NOT NULL,
                   PRIMARY KEY (
-                    run_uid,
                     nodeid,
                     phase,
                     entity_id,
                     from_line,
                     to_line
                   ),
-                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
+                  FOREIGN KEY (last_confirmed_run_uid) REFERENCES test_runs(uid),
                   FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
                 );
                 """
@@ -561,7 +555,10 @@ class DatabaseFacade:
         connection: sqlite3.Connection,
         nodeid: str,
         run_uid: str,
+        project_root: Path,
         duration_ms: int,
+        outcome: str,
+        error_message: str | None,
         now: str,
     ) -> None:
         file_path = _file_path_from_nodeid(nodeid)
@@ -575,15 +572,41 @@ class DatabaseFacade:
             INSERT OR REPLACE INTO tests (
               nodeid,
               file_path,
+              normalized_hash,
+              current_revision,
               last_seen_run_uid,
               last_duration_ms,
+              last_outcome,
+              last_error_message,
               first_seen_at,
               last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (nodeid, file_path, run_uid, duration_ms, first_seen_at, now),
+            (
+                nodeid,
+                file_path,
+                _normalized_test_hash(project_root, nodeid),
+                1,
+                run_uid,
+                duration_ms,
+                outcome,
+                error_message,
+                first_seen_at,
+                now,
+            ),
         )
+
+    def _current_test_revision(
+        self,
+        connection: sqlite3.Connection,
+        nodeid: str,
+    ) -> int:
+        row = connection.execute(
+            "SELECT current_revision FROM tests WHERE nodeid = ?",
+            (nodeid,),
+        ).fetchone()
+        return int(row["current_revision"]) if row else 1
 
 
 def _build_mock_tests() -> list[TestCase]:
@@ -644,7 +667,6 @@ def _coverage_paths(report: dict[str, Any]) -> list[tuple[str, str]]:
 def _entity_from_row(row: sqlite3.Row) -> CoverageEntity:
     return CoverageEntity(
         id=row["id"],
-        run_uid=row["run_uid"],
         file_path=row["file_path"],
         module_name=row["module_name"],
         qualified_name=row["qualified_name"],
@@ -652,13 +674,13 @@ def _entity_from_row(row: sqlite3.Row) -> CoverageEntity:
         start_line=row["start_line"],
         end_line=row["end_line"],
         normalized_hash=row["normalized_hash"],
+        current_revision=row["current_revision"],
         parent_id=row["parent_id"],
     )
 
 
 def _arc_fact_from_row(row: sqlite3.Row) -> CoverageArcFact:
     return CoverageArcFact(
-        run_uid=row["run_uid"],
         nodeid=row["nodeid"],
         phase=row["phase"],
         entity_id=row["entity_id"],
@@ -684,6 +706,43 @@ def _ensure_column(
 
 def _file_path_from_nodeid(nodeid: str) -> str:
     return nodeid.split("::", maxsplit=1)[0]
+
+
+def _normalized_test_hash(project_root: Path, nodeid: str) -> str | None:
+    relative_path, *symbol_parts = nodeid.split("::")
+    source_path = project_root / relative_path
+    if not source_path.exists():
+        return None
+
+    try:
+        source = source_path.read_text(encoding="utf-8")
+        module = ast.parse(source)
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+
+    target: ast.AST = module
+    for symbol_part in symbol_parts:
+        symbol_name = symbol_part.split("[", maxsplit=1)[0]
+        body = getattr(target, "body", [])
+        match = next(
+            (
+                node
+                for node in body
+                if isinstance(
+                    node,
+                    (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+                and node.name == symbol_name
+            ),
+            None,
+        )
+        if match is None:
+            return None
+        target = match
+
+    return hashlib.sha256(
+        ast.dump(target, annotate_fields=True, include_attributes=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _sha256(path: Path) -> str:
