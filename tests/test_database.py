@@ -5,6 +5,12 @@ from pathlib import Path
 
 from pytest_alchemist.database.facade import DATABASE_FILE_NAME, DatabaseFacade
 from pytest_alchemist.test_runner.runner import ARTIFACTS_DIR_NAME
+from pytest_alchemist.coverage_analysis.models import (
+    CoverageArcFact,
+    CoverageArtifactMetadata,
+    CoverageEntity,
+    CoverageLineFact,
+)
 
 
 def _write_test_report(
@@ -76,6 +82,9 @@ def test_database_facade_creates_sqlite_schema(tmp_path: Path) -> None:
         "tests",
         "test_results",
         "coverage_artifacts",
+        "coverage_entities",
+        "coverage_line_facts",
+        "coverage_arc_facts",
     }.issubset(table_names)
 
 
@@ -159,6 +168,140 @@ def test_save_test_run_persists_coverage_artifact(tmp_path: Path) -> None:
     assert artifacts_by_format["xml"]["sha256"] == hashlib.sha256(
         coverage_xml_path.read_bytes()
     ).hexdigest()
+
+
+def test_save_test_run_persists_sqlite_coverage_artifact(tmp_path: Path) -> None:
+    database = DatabaseFacade(project_path=tmp_path)
+    run_dir = tmp_path / ARTIFACTS_DIR_NAME / "test-runs" / "run-sqlite"
+    run_dir.mkdir(parents=True)
+    coverage_sqlite_path = run_dir / ".coverage"
+    coverage_sqlite_path.write_bytes(b"sqlite coverage")
+    report_path = _write_test_report(
+        tmp_path,
+        uid="run-sqlite",
+        coverage={
+            "format": "sqlite",
+            "coverage_json_path": None,
+            "coverage_xml_path": None,
+            "coverage_sqlite_path": str(coverage_sqlite_path),
+        },
+    )
+
+    database.save_test_run(report_path)
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        artifact = connection.execute(
+            "SELECT run_uid, format, path, sha256 FROM coverage_artifacts"
+        ).fetchone()
+
+    assert artifact["run_uid"] == "run-sqlite"
+    assert artifact["format"] == "sqlite"
+    assert artifact["path"] == str(coverage_sqlite_path)
+    assert artifact["sha256"] == hashlib.sha256(coverage_sqlite_path.read_bytes()).hexdigest()
+
+
+def test_database_persists_normalized_coverage_facts_idempotently(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseFacade(project_path=tmp_path)
+    report_path = _write_test_report(tmp_path, uid="run-facts")
+    database.save_test_run(report_path)
+    metadata = CoverageArtifactMetadata(
+        run_uid="run-facts",
+        path=str(report_path.parent / ".coverage"),
+        sha256="abc",
+        coverage_py_version="7.13.5",
+        has_contexts=True,
+        has_arcs=True,
+        quality="complete",
+    )
+    entities = [
+        CoverageEntity(
+            id=1,
+            run_uid="run-facts",
+            file_path="calc.py",
+            module_name="calc",
+            qualified_name="calc",
+            kind="module",
+            start_line=1,
+            end_line=5,
+            normalized_hash="module-hash",
+            parent_id=None,
+        ),
+        CoverageEntity(
+            id=2,
+            run_uid="run-facts",
+            file_path="calc.py",
+            module_name="calc",
+            qualified_name="calc.add",
+            kind="function",
+            start_line=1,
+            end_line=2,
+            normalized_hash="function-hash",
+            parent_id=1,
+        ),
+    ]
+    line_facts = [
+        CoverageLineFact(
+            run_uid="run-facts",
+            nodeid="tests/test_calc.py::test_add",
+            phase="run",
+            entity_id=2,
+            raw_line=2,
+            entity_line_offset=1,
+        )
+    ]
+    arc_facts = [
+        CoverageArcFact(
+            run_uid="run-facts",
+            nodeid="tests/test_calc.py::test_add",
+            phase="run",
+            entity_id=2,
+            from_line=1,
+            to_line=2,
+            from_offset=0,
+            to_offset=1,
+            arc_hash="arc-hash",
+        )
+    ]
+
+    database.save_coverage_artifact_metadata(metadata)
+    database.replace_coverage_facts("run-facts", entities, line_facts, arc_facts)
+    database.replace_coverage_facts("run-facts", entities, line_facts, arc_facts)
+
+    tests = database.list_coverage_tests("run-facts")
+    covered_entities = database.list_entities_covered_by_test(
+        "run-facts",
+        "tests/test_calc.py::test_add",
+    )
+    arcs = database.list_arcs_covered_by_test(
+        "run-facts",
+        "tests/test_calc.py::test_add",
+    )
+
+    assert tests == ["tests/test_calc.py::test_add"]
+    assert [entity.qualified_name for entity in covered_entities] == ["calc.add"]
+    assert len(arcs) == 1
+    assert arcs[0].arc_hash == "arc-hash"
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        artifact = connection.execute(
+            "SELECT quality, has_contexts, has_arcs FROM coverage_artifacts"
+        ).fetchone()
+        entity_count = connection.execute(
+            "SELECT COUNT(*) FROM coverage_entities WHERE run_uid = 'run-facts'"
+        ).fetchone()[0]
+        line_count = connection.execute(
+            "SELECT COUNT(*) FROM coverage_line_facts WHERE run_uid = 'run-facts'"
+        ).fetchone()[0]
+
+    assert artifact["quality"] == "complete"
+    assert artifact["has_contexts"] == 1
+    assert artifact["has_arcs"] == 1
+    assert entity_count == 2
+    assert line_count == 1
 
 
 def test_save_test_run_upserts_tests_and_results(tmp_path: Path) -> None:

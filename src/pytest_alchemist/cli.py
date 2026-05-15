@@ -25,8 +25,8 @@ def _normalize_coverage_format(value: str | None) -> CoverageFormat | None:
         return None
 
     normalized = value.lower()
-    if normalized not in ("json", "xml"):
-        raise typer.BadParameter("collect coverage must be 'json' or 'xml'.")
+    if normalized not in ("json", "xml", "sqlite"):
+        raise typer.BadParameter("collect coverage must be 'json', 'xml', or 'sqlite'.")
 
     return cast(CoverageFormat, normalized)
 
@@ -52,6 +52,8 @@ def _print_test_report_summary(test_report_path: str) -> None:
         console.print(f"coverage json: {coverage['coverage_json_path']}")
     if coverage and coverage.get("coverage_xml_path"):
         console.print(f"coverage xml: {coverage['coverage_xml_path']}")
+    if coverage and coverage.get("coverage_sqlite_path"):
+        console.print(f"coverage sqlite: {coverage['coverage_sqlite_path']}")
     console.print(f"test report: {test_report_path}")
 
 
@@ -63,9 +65,12 @@ def collect_coverage(
 
     result = _build_application(project_path).collect_coverage()
     console.print(
-        f"Collected {len(result.records)} coverage records "
-        f"for {len(result.tests)} tests."
+        f"Collected coverage for run {result.run_uid}: "
+        f"{result.entity_count} entities, {result.line_fact_count} line facts, "
+        f"{result.arc_fact_count} arc facts, quality={result.quality}."
     )
+    for warning in result.warnings:
+        console.print(f"warning: {warning}")
 
 
 @app.command("select-tests")

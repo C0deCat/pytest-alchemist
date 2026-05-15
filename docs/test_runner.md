@@ -14,7 +14,7 @@
 TestRunner().run_tests(
     project_path: str,
     tests: list[TestCase | str] | None = None,
-    collect_coverage: "json" | "xml" | None = None,
+    collect_coverage: "json" | "xml" | "sqlite" | None = None,
     collects_tests: bool = True,
 ) -> str
 ```
@@ -97,7 +97,12 @@ subprocess runner нормализует их в `runned_tests`.
 
 - `json` - собрать coverage JSON;
 - `xml` - собрать coverage XML;
+- `sqlite` - сохранить нативный `.coverage` файл без дополнительного отчета;
 - `None` - не собирать coverage.
+
+Для любого включенного режима coverage runner сохраняет нативный `.coverage`
+файл в директории запуска. JSON/XML отчеты являются дополнительными
+артефактами.
 
 `coverage` в отчете равен `null`, если coverage не собирался.
 
@@ -137,7 +142,8 @@ subprocess runner нормализует их в `runned_tests`.
   "coverage": {
     "format": "json",
     "coverage_json_path": "<absolute coverage.json path>",
-    "coverage_xml_path": null
+    "coverage_xml_path": null,
+    "coverage_sqlite_path": "<absolute .coverage path>"
   },
   "artifacts": {
     "run_dir": "<absolute run dir>",

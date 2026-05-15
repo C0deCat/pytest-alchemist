@@ -86,14 +86,17 @@ def _write_test_report(
     return str(report_path)
 
 
-def test_collect_coverage_returns_mock_summary(tmp_path: Path) -> None:
+def test_collect_coverage_runs_pytest_and_normalizes_coverage(tmp_path: Path) -> None:
+    _create_pytest_project(tmp_path)
     app = AlchemistApplication(project_path=tmp_path)
 
     result = app.collect_coverage()
 
-    assert result.records
-    assert result.tests
-    assert result.covered_files == ["src/example/api.py", "src/example/math.py"]
+    assert result.run_uid
+    assert result.quality == "complete"
+    assert result.entity_count > 0
+    assert result.line_fact_count > 0
+    assert result.arc_fact_count > 0
 
 
 def test_select_tests_returns_non_empty_minimized_set(tmp_path: Path) -> None:
@@ -183,10 +186,10 @@ def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:
             "SELECT uid, coverage_enabled FROM test_runs WHERE uid = ?",
             (report["uid"],),
         ).fetchone()
-        artifact = connection.execute(
+        artifacts = connection.execute(
             "SELECT run_uid, format, path FROM coverage_artifacts WHERE run_uid = ?",
             (report["uid"],),
-        ).fetchone()
+        ).fetchall()
         test_result = connection.execute(
             "SELECT run_uid, nodeid, outcome FROM test_results WHERE run_uid = ?",
             (report["uid"],),
@@ -196,10 +199,12 @@ def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:
     assert run is not None
     assert run["uid"] == report["uid"]
     assert run["coverage_enabled"] == 1
-    assert artifact is not None
-    assert artifact["run_uid"] == report["uid"]
-    assert artifact["format"] == "json"
-    assert Path(artifact["path"]).exists()
+    artifacts_by_format = {artifact["format"]: artifact for artifact in artifacts}
+    assert set(artifacts_by_format) == {"json", "sqlite"}
+    assert artifacts_by_format["json"]["run_uid"] == report["uid"]
+    assert Path(artifacts_by_format["json"]["path"]).exists()
+    assert artifacts_by_format["sqlite"]["run_uid"] == report["uid"]
+    assert Path(artifacts_by_format["sqlite"]["path"]).exists()
     assert test_result is not None
     assert test_result["run_uid"] == report["uid"]
     assert test_result["outcome"] == "passed"

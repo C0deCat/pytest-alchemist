@@ -9,7 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pytest_alchemist.coverage_analysis.models import CoverageRecord
+from pytest_alchemist.coverage_analysis.models import (
+    CoverageArcFact,
+    CoverageArtifactMetadata,
+    CoverageEntity,
+    CoverageLineFact,
+    CoverageRecord,
+)
 from pytest_alchemist.diff_picker.models import ChangedCode
 from pytest_alchemist.test_runner.models import TestCase
 
@@ -72,6 +78,253 @@ class DatabaseFacade:
         """Store collected coverage in memory until coverage persistence exists."""
 
         self._coverage_collection_runs.append(list(records))
+
+    def save_coverage_artifact_metadata(
+        self,
+        metadata: CoverageArtifactMetadata,
+    ) -> None:
+        """Persist metadata for a native Coverage.py artifact."""
+
+        with self._connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE coverage_artifacts
+                SET
+                  sha256 = ?,
+                  coverage_py_version = ?,
+                  has_contexts = ?,
+                  has_arcs = ?,
+                  quality = ?
+                WHERE run_uid = ? AND path = ?
+                """,
+                (
+                    metadata.sha256,
+                    metadata.coverage_py_version,
+                    int(metadata.has_contexts),
+                    int(metadata.has_arcs),
+                    metadata.quality,
+                    metadata.run_uid,
+                    metadata.path,
+                ),
+            )
+            if result.rowcount:
+                return
+
+            connection.execute(
+                """
+                INSERT INTO coverage_artifacts (
+                  run_uid,
+                  format,
+                  path,
+                  sha256,
+                  coverage_py_version,
+                  has_contexts,
+                  has_arcs,
+                  quality,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    metadata.run_uid,
+                    "sqlite",
+                    metadata.path,
+                    metadata.sha256,
+                    metadata.coverage_py_version,
+                    int(metadata.has_contexts),
+                    int(metadata.has_arcs),
+                    metadata.quality,
+                    _timestamp(),
+                ),
+            )
+
+    def replace_coverage_facts(
+        self,
+        run_uid: str,
+        entities: list[CoverageEntity],
+        line_facts: list[CoverageLineFact],
+        arc_facts: list[CoverageArcFact],
+    ) -> None:
+        """Replace normalized coverage facts for one run."""
+
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM coverage_arc_facts WHERE run_uid = ?",
+                (run_uid,),
+            )
+            connection.execute(
+                "DELETE FROM coverage_line_facts WHERE run_uid = ?",
+                (run_uid,),
+            )
+            connection.execute(
+                "DELETE FROM coverage_entities WHERE run_uid = ?",
+                (run_uid,),
+            )
+
+            entity_id_map: dict[int, int] = {}
+            for entity in entities:
+                parent_id = (
+                    entity_id_map[entity.parent_id]
+                    if entity.parent_id is not None
+                    else None
+                )
+                cursor = connection.execute(
+                    """
+                    INSERT INTO coverage_entities (
+                      run_uid,
+                      file_path,
+                      module_name,
+                      qualified_name,
+                      kind,
+                      start_line,
+                      end_line,
+                      normalized_hash,
+                      parent_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entity.run_uid,
+                        entity.file_path,
+                        entity.module_name,
+                        entity.qualified_name,
+                        entity.kind,
+                        entity.start_line,
+                        entity.end_line,
+                        entity.normalized_hash,
+                        parent_id,
+                    ),
+                )
+                if entity.id is not None:
+                    entity_id_map[entity.id] = int(cursor.lastrowid)
+
+            for fact in line_facts:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO coverage_line_facts (
+                      run_uid,
+                      nodeid,
+                      phase,
+                      entity_id,
+                      raw_line,
+                      entity_line_offset
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fact.run_uid,
+                        fact.nodeid,
+                        fact.phase,
+                        entity_id_map[fact.entity_id],
+                        fact.raw_line,
+                        fact.entity_line_offset,
+                    ),
+                )
+
+            for fact in arc_facts:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO coverage_arc_facts (
+                      run_uid,
+                      nodeid,
+                      phase,
+                      entity_id,
+                      from_line,
+                      to_line,
+                      from_offset,
+                      to_offset,
+                      arc_hash
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fact.run_uid,
+                        fact.nodeid,
+                        fact.phase,
+                        entity_id_map[fact.entity_id],
+                        fact.from_line,
+                        fact.to_line,
+                        fact.from_offset,
+                        fact.to_offset,
+                        fact.arc_hash,
+                    ),
+                )
+
+    def list_coverage_tests(self, run_uid: str) -> list[str]:
+        """Return test node ids observed in normalized coverage facts."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT nodeid FROM coverage_line_facts WHERE run_uid = ?
+                UNION
+                SELECT nodeid FROM coverage_arc_facts WHERE run_uid = ?
+                ORDER BY nodeid
+                """,
+                (run_uid, run_uid),
+            ).fetchall()
+        return [row["nodeid"] for row in rows]
+
+    def list_entities_covered_by_test(
+        self,
+        run_uid: str,
+        nodeid: str,
+    ) -> list[CoverageEntity]:
+        """Return entities covered by a test in one run."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT e.*
+                FROM coverage_entities e
+                WHERE e.id IN (
+                  SELECT entity_id
+                  FROM coverage_line_facts
+                  WHERE run_uid = ? AND nodeid = ?
+                  UNION
+                  SELECT entity_id
+                  FROM coverage_arc_facts
+                  WHERE run_uid = ? AND nodeid = ?
+                )
+                ORDER BY e.file_path, e.start_line, e.qualified_name
+                """,
+                (run_uid, nodeid, run_uid, nodeid),
+            ).fetchall()
+        return [_entity_from_row(row) for row in rows]
+
+    def list_tests_covering_entity(self, entity_id: int) -> list[str]:
+        """Return test node ids that covered a normalized entity."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT nodeid FROM coverage_line_facts WHERE entity_id = ?
+                UNION
+                SELECT nodeid FROM coverage_arc_facts WHERE entity_id = ?
+                ORDER BY nodeid
+                """,
+                (entity_id, entity_id),
+            ).fetchall()
+        return [row["nodeid"] for row in rows]
+
+    def list_arcs_covered_by_test(
+        self,
+        run_uid: str,
+        nodeid: str,
+    ) -> list[CoverageArcFact]:
+        """Return branch arcs covered by a test in one run."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM coverage_arc_facts
+                WHERE run_uid = ? AND nodeid = ?
+                ORDER BY entity_id, from_line, to_line
+                """,
+                (run_uid, nodeid),
+            ).fetchall()
+        return [_arc_fact_from_row(row) for row in rows]
 
     def save_test_run(self, test_report_path: str | Path) -> None:
         """Persist a test run from its JSON report."""
@@ -231,11 +484,71 @@ class DatabaseFacade:
                   format TEXT NOT NULL,
                   path TEXT NOT NULL,
                   sha256 TEXT,
+                  coverage_py_version TEXT,
+                  has_contexts INTEGER,
+                  has_arcs INTEGER,
+                  quality TEXT,
                   created_at TEXT NOT NULL,
                   FOREIGN KEY (run_uid) REFERENCES test_runs(uid)
                 );
+
+                CREATE TABLE IF NOT EXISTS coverage_entities (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  run_uid TEXT NOT NULL,
+                  file_path TEXT NOT NULL,
+                  module_name TEXT,
+                  qualified_name TEXT,
+                  kind TEXT NOT NULL,
+                  start_line INTEGER,
+                  end_line INTEGER,
+                  normalized_hash TEXT,
+                  parent_id INTEGER,
+                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
+                  FOREIGN KEY (parent_id) REFERENCES coverage_entities(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS coverage_line_facts (
+                  run_uid TEXT NOT NULL,
+                  nodeid TEXT NOT NULL,
+                  phase TEXT NOT NULL,
+                  entity_id INTEGER NOT NULL,
+                  raw_line INTEGER NOT NULL,
+                  entity_line_offset INTEGER,
+                  PRIMARY KEY (run_uid, nodeid, phase, entity_id, raw_line),
+                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
+                  FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS coverage_arc_facts (
+                  run_uid TEXT NOT NULL,
+                  nodeid TEXT NOT NULL,
+                  phase TEXT NOT NULL,
+                  entity_id INTEGER NOT NULL,
+                  from_line INTEGER NOT NULL,
+                  to_line INTEGER NOT NULL,
+                  from_offset INTEGER,
+                  to_offset INTEGER,
+                  arc_hash TEXT NOT NULL,
+                  PRIMARY KEY (
+                    run_uid,
+                    nodeid,
+                    phase,
+                    entity_id,
+                    from_line,
+                    to_line
+                  ),
+                  FOREIGN KEY (run_uid) REFERENCES test_runs(uid),
+                  FOREIGN KEY (entity_id) REFERENCES coverage_entities(id)
+                );
                 """
             )
+            for column_name, column_type in (
+                ("coverage_py_version", "TEXT"),
+                ("has_contexts", "INTEGER"),
+                ("has_arcs", "INTEGER"),
+                ("quality", "TEXT"),
+            ):
+                _ensure_column(connection, "coverage_artifacts", column_name, column_type)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -323,7 +636,50 @@ def _coverage_paths(report: dict[str, Any]) -> list[tuple[str, str]]:
         paths.append(("json", coverage["coverage_json_path"]))
     if coverage.get("coverage_xml_path"):
         paths.append(("xml", coverage["coverage_xml_path"]))
+    if coverage.get("coverage_sqlite_path"):
+        paths.append(("sqlite", coverage["coverage_sqlite_path"]))
     return paths
+
+
+def _entity_from_row(row: sqlite3.Row) -> CoverageEntity:
+    return CoverageEntity(
+        id=row["id"],
+        run_uid=row["run_uid"],
+        file_path=row["file_path"],
+        module_name=row["module_name"],
+        qualified_name=row["qualified_name"],
+        kind=row["kind"],
+        start_line=row["start_line"],
+        end_line=row["end_line"],
+        normalized_hash=row["normalized_hash"],
+        parent_id=row["parent_id"],
+    )
+
+
+def _arc_fact_from_row(row: sqlite3.Row) -> CoverageArcFact:
+    return CoverageArcFact(
+        run_uid=row["run_uid"],
+        nodeid=row["nodeid"],
+        phase=row["phase"],
+        entity_id=row["entity_id"],
+        from_line=row["from_line"],
+        to_line=row["to_line"],
+        from_offset=row["from_offset"],
+        to_offset=row["to_offset"],
+        arc_hash=row["arc_hash"],
+    )
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+) -> None:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    if column_name in {row["name"] for row in rows}:
+        return
+    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
 def _file_path_from_nodeid(nodeid: str) -> str:

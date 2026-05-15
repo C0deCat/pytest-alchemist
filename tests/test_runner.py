@@ -116,7 +116,11 @@ def test_run_tests_collects_json_coverage(tmp_path: Path) -> None:
     assert report["coverage"]["format"] == "json"
     assert report["coverage"]["coverage_json_path"] is not None
     assert report["coverage"]["coverage_xml_path"] is None
+    assert report["coverage"]["coverage_sqlite_path"] is not None
     assert Path(report["coverage"]["coverage_json_path"]).exists()
+    assert Path(report["coverage"]["coverage_sqlite_path"]).exists()
+    assert "--cov-context=test" in report["pytest"]["args"]
+    assert "--cov-branch" in report["pytest"]["args"]
 
 
 def test_run_tests_collects_xml_coverage(tmp_path: Path) -> None:
@@ -130,7 +134,28 @@ def test_run_tests_collects_xml_coverage(tmp_path: Path) -> None:
     assert report["coverage"]["format"] == "xml"
     assert report["coverage"]["coverage_xml_path"] is not None
     assert report["coverage"]["coverage_json_path"] is None
+    assert report["coverage"]["coverage_sqlite_path"] is not None
     assert Path(report["coverage"]["coverage_xml_path"]).exists()
+    assert Path(report["coverage"]["coverage_sqlite_path"]).exists()
+
+
+def test_run_tests_collects_sqlite_coverage(tmp_path: Path) -> None:
+    _create_pytest_project(tmp_path)
+
+    test_report_path = TestRunner().run_tests(str(tmp_path), collect_coverage="sqlite")
+    report = _read_report(test_report_path)
+
+    assert report["exit_code"] == 0
+    assert report["coverage"] is not None
+    assert report["coverage"]["format"] == "sqlite"
+    assert report["coverage"]["coverage_json_path"] is None
+    assert report["coverage"]["coverage_xml_path"] is None
+    assert report["coverage"]["coverage_sqlite_path"] is not None
+    assert Path(report["coverage"]["coverage_sqlite_path"]).exists()
+    assert any(arg.startswith("--cov") for arg in report["pytest"]["args"])
+    assert "--cov-context=test" in report["pytest"]["args"]
+    assert "--cov-branch" in report["pytest"]["args"]
+    assert "--cov-report=" in report["pytest"]["args"]
 
 
 def test_run_tests_collects_per_test_results(tmp_path: Path) -> None:

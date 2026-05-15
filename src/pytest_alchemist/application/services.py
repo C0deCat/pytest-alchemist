@@ -40,7 +40,14 @@ class AlchemistApplication:
     def collect_coverage(self) -> CoverageCollectionResult:
         """Collect and store coverage data."""
 
-        return self._coverage_analyzer.collect()
+        test_report_path = self._run_tests(
+            str(self.project_path),
+            None,
+            "sqlite",
+            True,
+        )
+        self._database.save_test_run(test_report_path)
+        return self._coverage_analyzer.collect_from_report(test_report_path)
 
     def select_tests(self, last_commits: int) -> MinimizationResult:
         """Select a minimized test set for recent changes."""

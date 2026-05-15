@@ -16,7 +16,7 @@ from typing import Any, Literal
 from pytest_alchemist.test_runner import logger
 from pytest_alchemist.test_runner.models import TestCase
 
-CoverageFormat = Literal["json", "xml"]
+CoverageFormat = Literal["json", "xml", "sqlite"]
 TestInput = TestCase | str
 
 ARTIFACTS_DIR_NAME = ".pytest-alchemist-artifacts"
@@ -35,8 +35,10 @@ class TestRunner:
     ) -> str:
         """Run pytest and return a path to the generated test report."""
 
-        if collect_coverage not in (None, "json", "xml"):
-            raise ValueError("collect_coverage must be 'json', 'xml', or None.")
+        if collect_coverage not in (None, "json", "xml", "sqlite"):
+            raise ValueError(
+                "collect_coverage must be 'json', 'xml', 'sqlite', or None."
+            )
 
         resolved_project_path = Path(project_path).resolve()
         if not resolved_project_path.exists():
@@ -66,22 +68,17 @@ class TestRunner:
                 env.get("PYTHONPATH"),
             )
 
-        if collect_coverage == "json" and coverage is not None:
-            command.extend(
-                [
-                    "--cov",
-                    "--cov-context=test",
-                    f"--cov-report=json:{coverage['coverage_json_path']}",
-                ]
-            )
-        elif collect_coverage == "xml" and coverage is not None:
-            command.extend(
-                [
-                    "--cov",
-                    "--cov-context=test",
-                    f"--cov-report=xml:{coverage['coverage_xml_path']}",
-                ]
-            )
+        if coverage is not None:
+            env["COVERAGE_FILE"] = str(coverage["coverage_sqlite_path"])
+            coverage_config_path = _find_coverage_config(resolved_project_path)
+            cov_arg = "--cov" if coverage_config_path is not None else "--cov=."
+            command.extend([cov_arg, "--cov-context=test", "--cov-branch", "--cov-report="])
+            if coverage_config_path is not None:
+                command.append(f"--cov-config={coverage_config_path}")
+            if collect_coverage == "json":
+                command.append(f"--cov-report=json:{coverage['coverage_json_path']}")
+            elif collect_coverage == "xml":
+                command.append(f"--cov-report=xml:{coverage['coverage_xml_path']}")
         command.extend(nodeids)
 
         started_at = datetime.now(timezone.utc)
@@ -175,11 +172,35 @@ def _build_coverage_data(
 
     coverage_json_path = str(run_dir / "coverage.json") if collect_coverage == "json" else None
     coverage_xml_path = str(run_dir / "coverage.xml") if collect_coverage == "xml" else None
+    coverage_sqlite_path = str(run_dir / ".coverage")
     return {
         "format": collect_coverage,
         "coverage_json_path": coverage_json_path,
         "coverage_xml_path": coverage_xml_path,
+        "coverage_sqlite_path": coverage_sqlite_path,
     }
+
+
+def _find_coverage_config(project_path: Path) -> Path | None:
+    pyproject = project_path / "pyproject.toml"
+    if _file_contains(pyproject, "[tool.coverage"):
+        return pyproject
+
+    coveragerc = project_path / ".coveragerc"
+    if coveragerc.exists():
+        return coveragerc
+
+    for filename in ("tox.ini", "setup.cfg"):
+        candidate = project_path / filename
+        if _file_contains(candidate, "[coverage:"):
+            return candidate
+    return None
+
+
+def _file_contains(path: Path, value: str) -> bool:
+    if not path.exists():
+        return False
+    return value in path.read_text(encoding="utf-8")
 
 
 def _prepend_pythonpath(path: Path, existing: str | None) -> str:
