@@ -31,10 +31,21 @@ class DiffPicker:
     def __init__(self, database: DatabaseFacade) -> None:
         self._database = database
 
-    def pick_candidates(self, last_commits: int) -> TestSelection:
-        """Return tests affected by Python changes in `HEAD~N..HEAD`."""
+    def pick_candidates(
+        self,
+        last_commits: int | None = None,
+        commit_hash: str | None = None,
+    ) -> TestSelection:
+        """Return tests affected by recent commits or one explicit commit."""
 
-        target_changes = self._read_recent_changes(last_commits)
+        if last_commits is not None and commit_hash is not None:
+            raise ValueError("Choose either last_commits or commit_hash, not both.")
+        if commit_hash is not None:
+            target_changes = self._read_commit_changes(commit_hash)
+        else:
+            target_changes = self._read_recent_changes(
+                1 if last_commits is None else last_commits
+            )
         coverage_records = self._database.list_coverage_records()
         coverage_quality = self._database.get_latest_coverage_quality()
         diagnostics = _build_initial_diagnostics(target_changes, coverage_quality)
@@ -71,7 +82,8 @@ class DiffPicker:
 
     def _read_recent_changes(self, last_commits: int) -> list[ChangedCode]:
         range_start = f"HEAD~{last_commits}"
-        self._run_git(["rev-parse", "--verify", range_start], range_start)
+        error_message = f"Could not inspect committed history range {range_start}..HEAD."
+        self._run_git(["rev-parse", "--verify", range_start], error_message)
         completed = self._run_git(
             [
                 "diff",
@@ -83,14 +95,36 @@ class DiffPicker:
                 "--",
                 "*.py",
             ],
-            range_start,
+            error_message,
+        )
+        return _parse_unified_diff(completed.stdout)
+
+    def _read_commit_changes(self, commit_hash: str) -> list[ChangedCode]:
+        error_message = f"Could not inspect commit {commit_hash}."
+        self._run_git(
+            ["rev-parse", "--verify", f"{commit_hash}^{{commit}}"],
+            error_message,
+        )
+        completed = self._run_git(
+            [
+                "show",
+                "--format=",
+                "--unified=0",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-renames",
+                commit_hash,
+                "--",
+                "*.py",
+            ],
+            error_message,
         )
         return _parse_unified_diff(completed.stdout)
 
     def _run_git(
         self,
         args: list[str],
-        range_start: str,
+        error_message: str,
     ) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
@@ -101,9 +135,7 @@ class DiffPicker:
                 text=True,
             )
         except (FileNotFoundError, subprocess.CalledProcessError) as error:
-            raise DiffRangeError(
-                f"Could not inspect committed history range {range_start}..HEAD."
-            ) from error
+            raise DiffRangeError(error_message) from error
 
     def _collect_raw_line_evidence(
         self,

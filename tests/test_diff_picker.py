@@ -19,14 +19,15 @@ from pytest_alchemist.diff_picker.picker import (
 from pytest_alchemist.test_runner.runner import ARTIFACTS_DIR_NAME
 
 
-def _git(project_path: Path, *args: str) -> None:
-    subprocess.run(
+def _git(project_path: Path, *args: str) -> str:
+    completed = subprocess.run(
         ["git", *args],
         cwd=project_path,
         check=True,
         capture_output=True,
         text=True,
     )
+    return completed.stdout.strip()
 
 
 def _init_repo(project_path: Path) -> None:
@@ -281,6 +282,48 @@ def test_diff_picker_reports_deleted_only_changes_without_false_matches(
     )
 
 
+def test_diff_picker_selects_changes_for_one_commit_hash_only(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source_path = tmp_path / "src" / "pkg"
+    source_path.mkdir(parents=True)
+    module_path = source_path / "module.py"
+    module_path.write_text(
+        "\n".join(["VALUE = 1", "VALUE = 2", "VALUE = 3", ""]),
+        encoding="utf-8",
+    )
+    tests_path = tmp_path / "tests"
+    tests_path.mkdir()
+    (tests_path / "test_module.py").write_text(
+        "\n".join(["def test_first(): pass", "def test_second(): pass", ""]),
+        encoding="utf-8",
+    )
+    _commit_all(tmp_path, "baseline")
+
+    module_path.write_text(
+        "\n".join(["VALUE = 1", "VALUE = 20", "VALUE = 3", ""]),
+        encoding="utf-8",
+    )
+    _commit_all(tmp_path, "target change")
+    target_commit = _git(tmp_path, "rev-parse", "HEAD")
+
+    module_path.write_text(
+        "\n".join(["VALUE = 1", "VALUE = 20", "VALUE = 30", ""]),
+        encoding="utf-8",
+    )
+    _commit_all(tmp_path, "later change")
+
+    database = DatabaseFacade(tmp_path)
+    _persist_current_coverage(database, tmp_path)
+
+    selection = DiffPicker(database).pick_candidates(commit_hash=target_commit)
+
+    assert [change.modified_lines for change in selection.target_changes] == [[2]]
+    assert [(item.test_nodeid, item.line) for item in selection.evidence] == [
+        ("tests/test_module.py::test_first", 2),
+        ("tests/test_module.py::test_second", 2),
+    ]
+
+
 def test_diff_picker_reports_missing_and_degraded_coverage(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     source_path = tmp_path / "src"
@@ -321,3 +364,12 @@ def test_diff_picker_raises_when_requested_history_is_too_short(tmp_path: Path) 
 
     with pytest.raises(DiffRangeError):
         DiffPicker(DatabaseFacade(tmp_path)).pick_candidates(last_commits=2)
+
+
+def test_diff_picker_raises_when_commit_hash_is_invalid(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+
+    with pytest.raises(DiffRangeError, match="Could not inspect commit not-a-commit"):
+        DiffPicker(DatabaseFacade(tmp_path)).pick_candidates(commit_hash="not-a-commit")

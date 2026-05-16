@@ -50,15 +50,22 @@ class AlchemistApplication:
         self._database.save_test_run(test_report_path)
         return self._coverage_analyzer.collect_from_report(test_report_path)
 
-    def select_tests(self, last_commits: int) -> TestSelection:
-        """Select the full affected test set for recent changes."""
+    def select_tests(
+        self,
+        last_commits: int | None = None,
+        commit_hash: str | None = None,
+    ) -> TestSelection:
+        """Select the full affected test set for recent or explicit changes."""
 
-        return self._diff_picker.pick_candidates(last_commits)
+        return self._diff_picker.pick_candidates(
+            last_commits=last_commits,
+            commit_hash=commit_hash,
+        )
 
     def run_minimal(self, last_commits: int) -> str:
         """Select and run a minimized test set."""
 
-        selection = self.select_tests(last_commits)
+        selection = self.select_tests(last_commits=last_commits)
         minimization_result = self._minimizer.minimize(
             MinimizationInput(
                 candidates=selection.candidates,

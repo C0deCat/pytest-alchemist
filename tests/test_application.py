@@ -96,8 +96,16 @@ def _write_test_report(
 class _FakeDiffPicker:
     def __init__(self, selection: TestSelection) -> None:
         self.selection = selection
+        self.last_commits: int | None = None
+        self.commit_hash: str | None = None
 
-    def pick_candidates(self, last_commits: int) -> TestSelection:
+    def pick_candidates(
+        self,
+        last_commits: int | None = None,
+        commit_hash: str | None = None,
+    ) -> TestSelection:
+        self.last_commits = last_commits
+        self.commit_hash = commit_hash
         return self.selection
 
 
@@ -167,9 +175,10 @@ def test_collect_coverage_runs_pytest_and_normalizes_coverage(tmp_path: Path) ->
 
 
 def test_select_tests_returns_full_affected_set(tmp_path: Path) -> None:
+    diff_picker = _FakeDiffPicker(_selection())
     app = AlchemistApplication(
         project_path=tmp_path,
-        diff_picker=_FakeDiffPicker(_selection()),
+        diff_picker=diff_picker,
     )
 
     result = app.select_tests(last_commits=3)
@@ -178,6 +187,18 @@ def test_select_tests_returns_full_affected_set(tmp_path: Path) -> None:
         "tests/test_sample.py::test_one",
         "tests/test_sample.py::test_two",
     ]
+    assert diff_picker.last_commits == 3
+    assert diff_picker.commit_hash is None
+
+
+def test_select_tests_forwards_commit_hash(tmp_path: Path) -> None:
+    diff_picker = _FakeDiffPicker(_selection())
+    app = AlchemistApplication(project_path=tmp_path, diff_picker=diff_picker)
+
+    app.select_tests(commit_hash="abc123")
+
+    assert diff_picker.last_commits is None
+    assert diff_picker.commit_hash == "abc123"
 
 
 def test_run_minimal_returns_successful_mock_result(tmp_path: Path) -> None:

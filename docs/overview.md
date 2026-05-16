@@ -15,7 +15,7 @@ application scenarios and renders results for the terminal.
 Current commands:
 
 - `collect-coverage`
-- `select-tests --last-commits N`
+- `select-tests [--last-commits N | --commit-hash HASH]`
 - `run-minimal --last-commits N`
 - `run-tests [NODEID...]`
 

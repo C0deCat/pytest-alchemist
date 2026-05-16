@@ -1,11 +1,11 @@
 # DiffPicker Module
 
-`diff_picker` is responsible only for identifying tests affected by recent code
-changes.
+`diff_picker` is responsible only for identifying tests affected by committed
+code changes.
 
-It inspects the latest `N` committed changes, extracts changed Python files and
-changed lines, connects those changes to stored coverage facts, and returns the
-full set of tests that covered any affected code.
+It inspects either the latest `N` committed changes or one explicit commit,
+extracts changed Python files and changed lines, connects those changes to stored
+coverage facts, and returns the full set of tests that covered any affected code.
 
 It must not rank tests, optimize the returned set, infer which tests are
 "enough", or make risk-based decisions. If a test is connected to a change by
@@ -15,7 +15,7 @@ the available coverage data, it belongs in the result.
 
 `diff_picker` owns:
 
-- inspecting recent git history for the last `N` commits;
+- inspecting recent git history for the last `N` commits or one explicit commit;
 - extracting changed project files and changed line ranges from diffs;
 - normalizing those changes into a stable internal representation;
 - querying coverage facts for tests that touched the changed code;
@@ -101,6 +101,9 @@ HEAD~N..HEAD
 Working-tree changes and staged-but-uncommitted changes are outside the first
 scope.
 
+When a single commit hash is supplied, `diff_picker` inspects only that commit's
+patch.
+
 ## Output Contract
 
 `diff_picker` returns:
@@ -169,8 +172,8 @@ No further reduction happens inside `diff_picker`.
 ## Intended Flow
 
 ```text
-application.select_tests(last_commits=N)
-  -> diff_picker.pick_candidates(N)
+application.select_tests(last_commits=N | commit_hash=HASH)
+  -> diff_picker.pick_candidates(...)
   -> inspect git history
   -> build changed-code model
   -> query coverage facts
@@ -195,16 +198,17 @@ is only allowed to calculate.
 The first real implementation should support:
 
 1. reading the committed history range `HEAD~N..HEAD`;
-2. collecting changed Python source files and changed line numbers;
-3. handling ordinary additions and modifications through current-side line
+2. reading one explicit commit by hash;
+3. collecting changed Python source files and changed line numbers;
+4. handling ordinary additions and modifications through current-side line
    matching;
-4. acknowledging deleted lines from the old side of the diff;
-5. matching current-side changed file/line pairs against stored coverage line
+5. acknowledging deleted lines from the old side of the diff;
+6. matching current-side changed file/line pairs against stored coverage line
    facts;
-6. returning every matching test exactly once;
-7. returning an empty affected-test set when no stored coverage overlaps the
+7. returning every matching test exactly once;
+8. returning an empty affected-test set when no stored coverage overlaps the
    changed code;
-8. returning diagnostics that explain whether the empty result means no overlap,
+9. returning diagnostics that explain whether the empty result means no overlap,
    missing coverage, degraded coverage, or current-only coverage limitations.
 
 The MVP may postpone:
@@ -305,6 +309,7 @@ Those are policy or optimization questions for other layers.
 
 - Source scope: committed history only.
 - Git range semantics: `last_commits=N` means `HEAD~N..HEAD`.
+- Single-commit semantics: `commit_hash=HASH` inspects only that commit patch.
 - File scope: Python source files only.
 - Matching basis: raw file-and-line overlap first.
 - Coverage scope: current coverage snapshot only.

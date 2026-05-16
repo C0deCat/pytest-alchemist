@@ -76,13 +76,22 @@ def collect_coverage(
 
 @app.command("select-tests")
 def select_tests(
-    last_commits: int = typer.Option(1, "--last-commits", min=1),
+    last_commits: int | None = typer.Option(None, "--last-commits", min=1),
+    commit_hash: str | None = typer.Option(None, "--commit-hash"),
     project_path: Path | None = typer.Option(None, "--project-path"),
 ) -> None:
-    """Select the full affected test set for recent commits."""
+    """Select the full affected test set for recent commits or one commit."""
+
+    if last_commits is not None and commit_hash is not None:
+        raise typer.BadParameter(
+            "Choose either --last-commits or --commit-hash, not both."
+        )
 
     try:
-        result = _build_application(project_path).select_tests(last_commits)
+        result = _build_application(project_path).select_tests(
+            last_commits=last_commits if commit_hash is None else None,
+            commit_hash=commit_hash,
+        )
     except DiffRangeError as error:
         raise typer.BadParameter(str(error)) from error
 

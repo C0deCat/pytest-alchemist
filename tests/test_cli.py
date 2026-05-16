@@ -55,14 +55,15 @@ def _create_minimal_project(project_path: Path) -> None:
     )
 
 
-def _git(project_path: Path, *args: str) -> None:
-    subprocess.run(
+def _git(project_path: Path, *args: str) -> str:
+    completed = subprocess.run(
         ["git", *args],
         cwd=project_path,
         check=True,
         capture_output=True,
         text=True,
     )
+    return completed.stdout.strip()
 
 
 def _create_git_history(project_path: Path) -> None:
@@ -107,6 +108,61 @@ def test_select_tests_command() -> None:
     assert result.exit_code == 0
     assert "Affected tests" in result.output
     assert "coverage data is available" in result.output
+
+
+def test_select_tests_command_accepts_commit_hash() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+        result = runner.invoke(
+            app,
+            [
+                "select-tests",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Affected tests" in result.output
+
+
+def test_select_tests_command_rejects_multiple_diff_modes() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+        result = runner.invoke(
+            app,
+            [
+                "select-tests",
+                "--last-commits",
+                "1",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Choose either --last-commits or --commit-hash" in result.output
+
+
+def test_select_tests_command_defaults_to_last_commit() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+        result = runner.invoke(
+            app,
+            ["select-tests", "--project-path", str(project_path)],
+        )
+
+    assert result.exit_code == 0
+    assert "Affected tests" in result.output
 
 
 def test_run_minimal_command() -> None:

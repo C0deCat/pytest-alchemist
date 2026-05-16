@@ -69,6 +69,12 @@ Select tests for recent commits:
 uv run pytest-alchemist select-tests --last-commits 3
 ```
 
+Select tests for one explicit commit:
+
+```powershell
+uv run pytest-alchemist select-tests --commit-hash abc1234
+```
+
 Select and run the minimal test set:
 
 ```powershell
