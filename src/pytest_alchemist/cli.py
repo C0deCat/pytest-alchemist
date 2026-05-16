@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from pytest_alchemist.application import AlchemistApplication
+from pytest_alchemist.diff_picker.picker import DiffRangeError
 from pytest_alchemist.test_runner.runner import CoverageFormat
 
 app = typer.Typer(help="Minimize Python test runs using historical coverage.")
@@ -78,18 +79,25 @@ def select_tests(
     last_commits: int = typer.Option(1, "--last-commits", min=1),
     project_path: Path | None = typer.Option(None, "--project-path"),
 ) -> None:
-    """Select a minimized test set for recent commits."""
+    """Select the full affected test set for recent commits."""
 
-    result = _build_application(project_path).select_tests(last_commits)
-    table = Table(title="Selected tests")
+    try:
+        result = _build_application(project_path).select_tests(last_commits)
+    except DiffRangeError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    table = Table(title="Affected tests")
     table.add_column("Node id")
     table.add_column("Estimated duration", justify="right")
 
-    for test in result.selected_tests:
+    for test in result.candidates:
         table.add_row(test.nodeid, f"{test.estimated_duration:.2f}s")
 
     console.print(table)
-    console.print(result.reason)
+    if not result.candidates:
+        console.print("No affected tests found.")
+    for warning in result.diagnostics.warnings:
+        console.print(f"warning: {warning}")
 
 
 @app.command("run-minimal")

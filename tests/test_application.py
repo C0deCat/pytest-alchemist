@@ -3,6 +3,13 @@ import sqlite3
 from pathlib import Path
 
 from pytest_alchemist.application import AlchemistApplication
+from pytest_alchemist.coverage_analysis.models import CoverageRecord
+from pytest_alchemist.diff_picker.models import (
+    ChangedCode,
+    MatchEvidence,
+    SelectionDiagnostics,
+    TestSelection,
+)
 from pytest_alchemist.minimizer import Minimizer
 from pytest_alchemist.minimizer.models import MinimizationInput
 from pytest_alchemist.test_runner.models import TestCase
@@ -86,6 +93,66 @@ def _write_test_report(
     return str(report_path)
 
 
+class _FakeDiffPicker:
+    def __init__(self, selection: TestSelection) -> None:
+        self.selection = selection
+
+    def pick_candidates(self, last_commits: int) -> TestSelection:
+        return self.selection
+
+
+def _selection() -> TestSelection:
+    candidates = [
+        TestCase(
+            nodeid="tests/test_sample.py::test_one",
+            file_path="tests/test_sample.py",
+            estimated_duration=0.02,
+        ),
+        TestCase(
+            nodeid="tests/test_sample.py::test_two",
+            file_path="tests/test_sample.py",
+            estimated_duration=0.01,
+        ),
+    ]
+    return TestSelection(
+        candidates=candidates,
+        target_changes=[
+            ChangedCode(
+                file_path="src/sample.py",
+                added_lines=[],
+                modified_lines=[2],
+                deleted_lines=[],
+            )
+        ],
+        coverage_records=[
+            CoverageRecord(
+                test_nodeid="tests/test_sample.py::test_one",
+                file_path="src/sample.py",
+                lines=[2],
+            ),
+            CoverageRecord(
+                test_nodeid="tests/test_sample.py::test_two",
+                file_path="src/sample.py",
+                lines=[2],
+            ),
+        ],
+        evidence=[
+            MatchEvidence(
+                test_nodeid="tests/test_sample.py::test_one",
+                file_path="src/sample.py",
+                line=2,
+                change_kind="modified",
+                match_kind="raw_line",
+            )
+        ],
+        diagnostics=SelectionDiagnostics(
+            codes=[],
+            warnings=[],
+            coverage_quality="complete",
+        ),
+    )
+
+
 def test_collect_coverage_runs_pytest_and_normalizes_coverage(tmp_path: Path) -> None:
     _create_pytest_project(tmp_path)
     app = AlchemistApplication(project_path=tmp_path)
@@ -99,13 +166,18 @@ def test_collect_coverage_runs_pytest_and_normalizes_coverage(tmp_path: Path) ->
     assert result.arc_fact_count > 0
 
 
-def test_select_tests_returns_non_empty_minimized_set(tmp_path: Path) -> None:
-    app = AlchemistApplication(project_path=tmp_path)
+def test_select_tests_returns_full_affected_set(tmp_path: Path) -> None:
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=_FakeDiffPicker(_selection()),
+    )
 
     result = app.select_tests(last_commits=3)
 
-    assert result.selected_tests
-    assert all(test.nodeid for test in result.selected_tests)
+    assert [test.nodeid for test in result.candidates] == [
+        "tests/test_sample.py::test_one",
+        "tests/test_sample.py::test_two",
+    ]
 
 
 def test_run_minimal_returns_successful_mock_result(tmp_path: Path) -> None:
@@ -117,7 +189,11 @@ def test_run_minimal_returns_successful_mock_result(tmp_path: Path) -> None:
     ) -> str:
         return _write_test_report(Path(project_path), uid="run-minimal", selected_tests=tests)
 
-    app = AlchemistApplication(project_path=tmp_path, run_tests_func=fake_run_tests)
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=_FakeDiffPicker(_selection()),
+        run_tests_func=fake_run_tests,
+    )
 
     test_report_path = app.run_minimal(last_commits=3)
     report = json.loads(Path(test_report_path).read_text(encoding="utf-8"))
@@ -158,7 +234,11 @@ def test_run_minimal_passes_project_path_to_runner(tmp_path: Path) -> None:
         captured["collects_tests"] = collects_tests
         return _write_test_report(Path(project_path), uid="run-minimal", selected_tests=tests)
 
-    app = AlchemistApplication(project_path=tmp_path, run_tests_func=fake_run_tests)
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=_FakeDiffPicker(_selection()),
+        run_tests_func=fake_run_tests,
+    )
 
     test_report_path = app.run_minimal(last_commits=3)
     report = json.loads(Path(test_report_path).read_text(encoding="utf-8"))

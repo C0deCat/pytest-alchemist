@@ -6,6 +6,7 @@ from typing import Callable
 from pytest_alchemist.coverage_analysis.analyzer import CoverageAnalyzer
 from pytest_alchemist.coverage_analysis.models import CoverageCollectionResult
 from pytest_alchemist.database.facade import DatabaseFacade
+from pytest_alchemist.diff_picker.models import TestSelection
 from pytest_alchemist.diff_picker.picker import DiffPicker
 from pytest_alchemist.minimizer.minimizer import Minimizer
 from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationResult
@@ -49,22 +50,22 @@ class AlchemistApplication:
         self._database.save_test_run(test_report_path)
         return self._coverage_analyzer.collect_from_report(test_report_path)
 
-    def select_tests(self, last_commits: int) -> MinimizationResult:
-        """Select a minimized test set for recent changes."""
+    def select_tests(self, last_commits: int) -> TestSelection:
+        """Select the full affected test set for recent changes."""
 
-        selection = self._diff_picker.pick_candidates(last_commits)
-        return self._minimizer.minimize(
+        return self._diff_picker.pick_candidates(last_commits)
+
+    def run_minimal(self, last_commits: int) -> str:
+        """Select and run a minimized test set."""
+
+        selection = self.select_tests(last_commits)
+        minimization_result = self._minimizer.minimize(
             MinimizationInput(
                 candidates=selection.candidates,
                 target_changes=selection.target_changes,
                 coverage_records=selection.coverage_records,
             )
         )
-
-    def run_minimal(self, last_commits: int) -> str:
-        """Select and run a minimized test set."""
-
-        minimization_result = self.select_tests(last_commits)
         test_report_path = self._run_tests(
             str(self.project_path),
             minimization_result.selected_tests,

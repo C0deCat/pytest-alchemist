@@ -355,6 +355,96 @@ def test_database_persists_normalized_coverage_facts_idempotently(
     assert line_fact["last_confirmed_at"]
 
 
+def test_database_projects_current_coverage_records_and_line_matches(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseFacade(project_path=tmp_path)
+    report_path = _write_test_report(
+        tmp_path,
+        uid="run-current",
+        runned_tests={
+            "tests/test_calc.py::test_add": {
+                "nodeid": "tests/test_calc.py::test_add",
+                "outcome": "passed",
+                "duration_ms": 10,
+            },
+            "tests/test_calc.py::test_subtract": {
+                "nodeid": "tests/test_calc.py::test_subtract",
+                "outcome": "passed",
+                "duration_ms": 12,
+            },
+        },
+    )
+    database.save_test_run(report_path)
+    metadata = CoverageArtifactMetadata(
+        run_uid="run-current",
+        path=str(report_path.parent / ".coverage"),
+        sha256="abc",
+        coverage_py_version="7.13.5",
+        has_contexts=True,
+        has_arcs=True,
+        quality="complete",
+    )
+    database.save_coverage_artifact_metadata(metadata)
+    database.replace_coverage_facts(
+        "run-current",
+        [
+            CoverageEntity(
+                id=1,
+                file_path="calc.py",
+                module_name="calc",
+                qualified_name="calc",
+                kind="module",
+                start_line=1,
+                end_line=5,
+                normalized_hash="module-hash",
+                current_revision=1,
+                parent_id=None,
+            )
+        ],
+        [
+            CoverageLineFact(
+                nodeid="tests/test_calc.py::test_add",
+                phase="run",
+                entity_id=1,
+                raw_line=2,
+                entity_line_offset=1,
+            ),
+            CoverageLineFact(
+                nodeid="tests/test_calc.py::test_subtract",
+                phase="run",
+                entity_id=1,
+                raw_line=2,
+                entity_line_offset=1,
+            ),
+            CoverageLineFact(
+                nodeid="tests/test_calc.py::test_subtract",
+                phase="run",
+                entity_id=1,
+                raw_line=4,
+                entity_line_offset=3,
+            ),
+        ],
+        [],
+    )
+
+    records = database.list_coverage_records()
+    matches = database.list_tests_covering_lines("calc.py", [2, 4, 99])
+
+    assert [(record.test_nodeid, record.file_path, record.lines) for record in records] == [
+        ("tests/test_calc.py::test_add", "calc.py", [2]),
+        ("tests/test_calc.py::test_subtract", "calc.py", [2, 4]),
+    ]
+    assert matches == {
+        2: [
+            "tests/test_calc.py::test_add",
+            "tests/test_calc.py::test_subtract",
+        ],
+        4: ["tests/test_calc.py::test_subtract"],
+    }
+    assert database.get_latest_coverage_quality() == "complete"
+
+
 def test_save_test_run_upserts_latest_test_state(tmp_path: Path) -> None:
     tests_path = tmp_path / "tests"
     tests_path.mkdir()
