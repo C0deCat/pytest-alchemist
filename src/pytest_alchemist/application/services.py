@@ -8,8 +8,9 @@ from pytest_alchemist.coverage_analysis.models import CoverageCollectionResult
 from pytest_alchemist.database.facade import DatabaseFacade
 from pytest_alchemist.diff_picker.models import TestSelection
 from pytest_alchemist.diff_picker.picker import DiffPicker
+from pytest_alchemist.minimizer.interface import MinimizerInterface
 from pytest_alchemist.minimizer.minimizer import Minimizer
-from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationResult
+from pytest_alchemist.minimizer.models import MinimizationInput
 from pytest_alchemist.test_runner.models import TestCase
 from pytest_alchemist.test_runner.runner import CoverageFormat, TestRunner
 
@@ -28,7 +29,7 @@ class AlchemistApplication:
         database: DatabaseFacade | None = None,
         coverage_analyzer: CoverageAnalyzer | None = None,
         diff_picker: DiffPicker | None = None,
-        minimizer: Minimizer | None = None,
+        minimizer: MinimizerInterface | None = None,
         run_tests_func: RunTestsFunc | None = None,
     ) -> None:
         self.project_path = Path(project_path or Path.cwd()).resolve()
@@ -62,7 +63,12 @@ class AlchemistApplication:
             commit_hash=commit_hash,
         )
 
-    def run_minimal(self, last_commits: int) -> str:
+    def run_minimal(
+        self,
+        last_commits: int,
+        seed: int | None = None,
+        runtime_tolerance_ms: int = 10,
+    ) -> str:
         """Select and run a minimized test set."""
 
         selection = self.select_tests(last_commits=last_commits)
@@ -71,7 +77,9 @@ class AlchemistApplication:
                 candidates=selection.candidates,
                 target_changes=selection.target_changes,
                 coverage_records=selection.coverage_records,
-            )
+            ),
+            seed=seed,
+            runtime_tolerance_ms=runtime_tolerance_ms,
         )
         test_report_path = self._run_tests(
             str(self.project_path),

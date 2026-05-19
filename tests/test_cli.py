@@ -186,6 +186,31 @@ def test_run_minimal_command() -> None:
     assert "Run finished" in result.output
 
 
+def test_run_minimal_command_accepts_seed_and_runtime_tolerance() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_minimal_project(project_path)
+        _create_git_history(project_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "run-minimal",
+                "--last-commits",
+                "1",
+                "--seed",
+                "123",
+                "--runtime-tolerance-ms",
+                "25",
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Run finished" in result.output
+
+
 def test_run_tests_command_runs_all_tests() -> None:
     with runner.isolated_filesystem() as isolated:
         project_path = Path(isolated)

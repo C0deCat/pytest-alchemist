@@ -1,40 +1,28 @@
-"""Mock deterministic minimizer."""
+"""Public minimizer orchestration."""
 
+from pytest_alchemist.minimizer.evaluators import build_coverage_evaluation
 from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationResult
+from pytest_alchemist.minimizer.mopso import MOPSOOptimizer
 
 
 class Minimizer:
-    """Selects a minimal test subset from already prepared input data."""
+    """Select a minimal test subset from already prepared input data."""
 
-    def minimize(self, input_data: MinimizationInput) -> MinimizationResult:
-        """Select tests by shortest estimated duration until each changed file is covered."""
+    def __init__(self, optimizer: MOPSOOptimizer | None = None) -> None:
+        self._optimizer = optimizer or MOPSOOptimizer()
 
-        if not input_data.candidates:
-            return MinimizationResult(selected_tests=[], reason="No candidate tests found.")
+    def minimize(
+        self,
+        input_data: MinimizationInput,
+        seed: int | None = None,
+        runtime_tolerance_ms: int = 10,
+    ) -> MinimizationResult:
+        """Select a feasible changed-line-covering subset of candidate tests."""
 
-        target_files = {change.file_path for change in input_data.target_changes}
-        selected = []
-        covered_files: set[str] = set()
-
-        for candidate in sorted(
-            input_data.candidates, key=lambda test: (test.estimated_duration, test.nodeid)
-        ):
-            candidate_files = {
-                record.file_path
-                for record in input_data.coverage_records
-                if record.test_nodeid == candidate.nodeid
-            }
-            if candidate_files.intersection(target_files - covered_files):
-                selected.append(candidate)
-                covered_files.update(candidate_files)
-
-            if target_files.issubset(covered_files):
-                break
-
-        if not selected:
-            selected = [input_data.candidates[0]]
-
-        return MinimizationResult(
-            selected_tests=selected,
-            reason="Mock minimizer selected candidates covering changed files.",
+        evaluation = build_coverage_evaluation(input_data)
+        return self._optimizer.minimize(
+            input_data=input_data,
+            evaluation=evaluation,
+            seed=seed,
+            runtime_tolerance_ms=runtime_tolerance_ms,
         )

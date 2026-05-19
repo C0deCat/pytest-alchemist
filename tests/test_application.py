@@ -273,6 +273,46 @@ def test_run_minimal_passes_project_path_to_runner(tmp_path: Path) -> None:
     assert captured["collects_tests"] is True
 
 
+def test_run_minimal_forwards_minimizer_parameters(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeMinimizer:
+        def minimize(
+            self,
+            input_data: MinimizationInput,
+            seed: int | None = None,
+            runtime_tolerance_ms: int = 10,
+        ):
+            captured["input_data"] = input_data
+            captured["seed"] = seed
+            captured["runtime_tolerance_ms"] = runtime_tolerance_ms
+            return Minimizer().minimize(
+                input_data,
+                seed=seed,
+                runtime_tolerance_ms=runtime_tolerance_ms,
+            )
+
+    def fake_run_tests(
+        project_path: str,
+        tests: list[TestCase | str] | None,
+        collect_coverage: object,
+        collects_tests: bool,
+    ) -> str:
+        return _write_test_report(Path(project_path), uid="run-minimal", selected_tests=tests)
+
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=_FakeDiffPicker(_selection()),
+        minimizer=_FakeMinimizer(),
+        run_tests_func=fake_run_tests,
+    )
+
+    app.run_minimal(last_commits=3, seed=123, runtime_tolerance_ms=25)
+
+    assert captured["seed"] == 123
+    assert captured["runtime_tolerance_ms"] == 25
+
+
 def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:
     _create_pytest_project(tmp_path)
     app = AlchemistApplication(project_path=tmp_path)
@@ -331,4 +371,4 @@ def test_minimizer_uses_input_data_without_database() -> None:
         )
     )
 
-    assert result.selected_tests == [candidate]
+    assert result.selected_tests == []

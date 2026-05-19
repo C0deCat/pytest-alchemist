@@ -112,11 +112,21 @@ def select_tests(
 @app.command("run-minimal")
 def run_minimal(
     last_commits: int = typer.Option(1, "--last-commits", min=1),
+    seed: int | None = typer.Option(None, "--seed"),
+    runtime_tolerance_ms: int = typer.Option(
+        10,
+        "--runtime-tolerance-ms",
+        min=0,
+    ),
     project_path: Path | None = typer.Option(None, "--project-path"),
 ) -> None:
     """Select and run a minimized test set for recent commits."""
 
-    test_report_path = _build_application(project_path).run_minimal(last_commits)
+    test_report_path = _build_application(project_path).run_minimal(
+        last_commits=last_commits,
+        seed=seed,
+        runtime_tolerance_ms=runtime_tolerance_ms,
+    )
     _print_test_report_summary(test_report_path)
 
 

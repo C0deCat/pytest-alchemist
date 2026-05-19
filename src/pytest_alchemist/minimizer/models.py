@@ -22,3 +22,8 @@ class MinimizationResult:
 
     selected_tests: list[TestCase]
     reason: str
+    coverage_percent: float
+    uncovered_target_count: int
+    selected_test_count: int
+    estimated_runtime: float
+    seed: int
