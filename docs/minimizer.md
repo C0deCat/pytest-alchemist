@@ -12,10 +12,13 @@ minimizer        -> chooses a smaller useful subset
 test_runner      -> executes the chosen tests
 ```
 
-The intended long-term algorithm is a manually implemented Multi-Objective
-Particle Swarm Optimization solver, or MOPSO, written with NumPy rather than an
-optimization library. That keeps the behavior inspectable and lets the project
-own every modeling decision.
+The default optimizer is a manually implemented Multi-Objective Particle Swarm
+Optimization solver, or MOPSO, written with NumPy rather than an optimization
+library. That keeps the behavior inspectable and lets the project own every
+modeling decision.
+
+The module also provides a deterministic greedy optimizer as a baseline for
+comparison and diagnostics.
 
 ## Current Input Contract
 
@@ -45,6 +48,21 @@ That means the first real optimizer can work with:
 Other ideas such as historical failure probability, flakiness, recency, or test
 priority are not available through the current input contract and should not be
 silently invented inside the minimizer.
+
+## Greedy Optimizer
+
+`GreedyOptimizer` is the deterministic coverage-only baseline optimizer. It uses
+the same coverage evaluation as MOPSO, then repeatedly selects the candidate
+test that covers the largest number of currently uncovered coverable changed
+lines.
+
+When candidates cover the same number of new lines, it preserves the existing
+candidate input order. Once coverable coverage is satisfied, greedy stops; it
+does not prune redundant selected tests.
+
+Greedy minimization is useful for diagnostics because it is fast, repeatable,
+and easy to reason about. It is not expected to replace MOPSO as the default
+optimizer; it gives the project a baseline to compare MOPSO against.
 
 ## What MOPSO Is
 
@@ -574,7 +592,7 @@ src/pytest_alchemist/minimizer/
     objectives.py         -> MOPSO objective evaluation
   greedy/
     __init__.py
-    optimizer.py          -> future greedy implementation
+    optimizer.py          -> GreedyOptimizer baseline implementation
 ```
 
 Files that belong only to one minimization method should live inside that
@@ -603,8 +621,8 @@ keep the optimizer easy to inspect, test, tune, and extend.
 
 ### Public Interface Boundary
 
-The outside-facing part of `minimizer` should expose a common minimizer
-interface, while MOPSO remains one concrete implementation behind that boundary.
+The outside-facing part of `minimizer` exposes a common minimizer interface,
+while MOPSO and greedy remain concrete implementations behind that boundary.
 
 Callers such as `application` should depend on the shared contract:
 
@@ -613,8 +631,21 @@ minimize(input_data, ...)
   -> MinimizationResult
 ```
 
-and should not need to know whether the active implementation is MOPSO, greedy,
-or another future minimization strategy.
+and should not need to know how MOPSO, greedy, or another future optimizer is
+constructed.
+
+The public facade accepts either a known optimizer name or an optimizer instance:
+
+```python
+Minimizer()
+Minimizer("mopso")
+Minimizer("greedy")
+Minimizer(fake_optimizer_for_tests)
+```
+
+`Minimizer()` defaults to MOPSO. The string names are intended for application
+and CLI orchestration; direct optimizer instances preserve dependency injection
+for tests and future custom optimizers.
 
 The intended replacement cost should be low: changing the minimization approach
 later should mainly mean changing which concrete minimizer class is constructed
@@ -692,3 +723,8 @@ For the MVP CLI:
 
 - expose `--seed`;
 - expose `--runtime-tolerance-ms`.
+
+The `compare-minimizers` diagnostic command runs greedy first and MOPSO second
+over the same selected candidate input. It does not run pytest. It reports the
+selected test count, estimated runtime in milliseconds, changed-line coverage
+percentage, and uncovered target count for each optimizer.

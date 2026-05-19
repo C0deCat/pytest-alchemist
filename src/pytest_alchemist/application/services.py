@@ -8,6 +8,10 @@ from pytest_alchemist.coverage_analysis.models import CoverageCollectionResult
 from pytest_alchemist.database.facade import DatabaseFacade
 from pytest_alchemist.diff_picker.models import TestSelection
 from pytest_alchemist.diff_picker.picker import DiffPicker
+from pytest_alchemist.application.models import (
+    MinimizerComparison,
+    MinimizerComparisonEntry,
+)
 from pytest_alchemist.minimizer.interface import MinimizerInterface
 from pytest_alchemist.minimizer.minimizer import Minimizer
 from pytest_alchemist.minimizer.models import MinimizationInput
@@ -65,13 +69,14 @@ class AlchemistApplication:
 
     def run_minimal(
         self,
-        last_commits: int,
+        last_commits: int | None = None,
+        commit_hash: str | None = None,
         seed: int | None = None,
         runtime_tolerance_ms: int = 10,
     ) -> str:
         """Select and run a minimized test set."""
 
-        selection = self.select_tests(last_commits=last_commits)
+        selection = self.select_tests(last_commits=last_commits, commit_hash=commit_hash)
         minimization_result = self._minimizer.minimize(
             MinimizationInput(
                 candidates=selection.candidates,
@@ -89,6 +94,42 @@ class AlchemistApplication:
         )
         self._database.save_test_run(test_report_path)
         return test_report_path
+
+    def compare_minimizers(
+        self,
+        last_commits: int | None = None,
+        commit_hash: str | None = None,
+        seed: int | None = None,
+        runtime_tolerance_ms: int = 10,
+    ) -> MinimizerComparison:
+        """Compare greedy and MOPSO minimizers without running tests."""
+
+        selection = self.select_tests(last_commits=last_commits, commit_hash=commit_hash)
+        input_data = MinimizationInput(
+            candidates=selection.candidates,
+            target_changes=selection.target_changes,
+            coverage_records=selection.coverage_records,
+        )
+        return MinimizerComparison(
+            entries=[
+                MinimizerComparisonEntry(
+                    optimizer_name="Greedy",
+                    result=Minimizer("greedy").minimize(
+                        input_data,
+                        seed=seed,
+                        runtime_tolerance_ms=runtime_tolerance_ms,
+                    ),
+                ),
+                MinimizerComparisonEntry(
+                    optimizer_name="MOPSO",
+                    result=Minimizer("mopso").minimize(
+                        input_data,
+                        seed=seed,
+                        runtime_tolerance_ms=runtime_tolerance_ms,
+                    ),
+                ),
+            ]
+        )
 
     def run_tests(
         self,

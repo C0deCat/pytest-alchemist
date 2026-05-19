@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from pytest_alchemist.application import AlchemistApplication
+from pytest_alchemist.application.models import MinimizerComparison
 from pytest_alchemist.diff_picker.picker import DiffRangeError
 from pytest_alchemist.test_runner.runner import CoverageFormat
 
@@ -36,6 +37,19 @@ def _load_test_report(test_report_path: str) -> dict[str, Any]:
     return json.loads(Path(test_report_path).read_text(encoding="utf-8"))
 
 
+def _resolve_diff_options(
+    last_commits: int | None,
+    commit_hash: str | None,
+) -> tuple[int | None, str | None]:
+    if last_commits is not None and commit_hash is not None:
+        raise typer.BadParameter(
+            "Choose either --last-commits or --commit-hash, not both."
+        )
+    if commit_hash is None and last_commits is None:
+        return 1, None
+    return last_commits, commit_hash
+
+
 def _print_test_report_summary(test_report_path: str) -> None:
     report = _load_test_report(test_report_path)
     summary = report["summary"]
@@ -56,6 +70,30 @@ def _print_test_report_summary(test_report_path: str) -> None:
     if coverage and coverage.get("coverage_sqlite_path"):
         console.print(f"coverage sqlite: {coverage['coverage_sqlite_path']}")
     console.print(f"test report: {test_report_path}")
+
+
+def _print_minimizer_comparison(comparison: MinimizerComparison) -> None:
+    console.print(
+        "Metrics: Test count, Estimated runtime (ms), Coverage, Uncovered targets"
+    )
+    table = Table(title="Minimizer comparison")
+    table.add_column("Optimizer", no_wrap=True)
+    table.add_column("Test count", justify="right", no_wrap=True)
+    table.add_column("Estimated runtime (ms)", justify="right", no_wrap=True)
+    table.add_column("Coverage", justify="right", no_wrap=True)
+    table.add_column("Uncovered targets", justify="right", no_wrap=True)
+
+    for entry in comparison.entries:
+        result = entry.result
+        table.add_row(
+            entry.optimizer_name,
+            str(result.selected_test_count),
+            f"{result.estimated_runtime * 1000:.2f}",
+            f"{result.coverage_percent:.2f}%",
+            str(result.uncovered_target_count),
+        )
+
+    console.print(table)
 
 
 @app.command("collect-coverage")
@@ -82,14 +120,11 @@ def select_tests(
 ) -> None:
     """Select the full affected test set for recent commits or one commit."""
 
-    if last_commits is not None and commit_hash is not None:
-        raise typer.BadParameter(
-            "Choose either --last-commits or --commit-hash, not both."
-        )
+    last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
 
     try:
         result = _build_application(project_path).select_tests(
-            last_commits=last_commits if commit_hash is None else None,
+            last_commits=last_commits,
             commit_hash=commit_hash,
         )
     except DiffRangeError as error:
@@ -111,7 +146,8 @@ def select_tests(
 
 @app.command("run-minimal")
 def run_minimal(
-    last_commits: int = typer.Option(1, "--last-commits", min=1),
+    last_commits: int | None = typer.Option(None, "--last-commits", min=1),
+    commit_hash: str | None = typer.Option(None, "--commit-hash"),
     seed: int | None = typer.Option(None, "--seed"),
     runtime_tolerance_ms: int = typer.Option(
         10,
@@ -122,12 +158,46 @@ def run_minimal(
 ) -> None:
     """Select and run a minimized test set for recent commits."""
 
-    test_report_path = _build_application(project_path).run_minimal(
-        last_commits=last_commits,
-        seed=seed,
-        runtime_tolerance_ms=runtime_tolerance_ms,
-    )
+    last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
+
+    try:
+        test_report_path = _build_application(project_path).run_minimal(
+            last_commits=last_commits,
+            commit_hash=commit_hash,
+            seed=seed,
+            runtime_tolerance_ms=runtime_tolerance_ms,
+        )
+    except DiffRangeError as error:
+        raise typer.BadParameter(str(error)) from error
     _print_test_report_summary(test_report_path)
+
+
+@app.command("compare-minimizers")
+def compare_minimizers(
+    last_commits: int | None = typer.Option(None, "--last-commits", min=1),
+    commit_hash: str | None = typer.Option(None, "--commit-hash"),
+    seed: int | None = typer.Option(None, "--seed"),
+    runtime_tolerance_ms: int = typer.Option(
+        10,
+        "--runtime-tolerance-ms",
+        min=0,
+    ),
+    project_path: Path | None = typer.Option(None, "--project-path"),
+) -> None:
+    """Compare greedy and MOPSO minimizers without running tests."""
+
+    last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
+
+    try:
+        comparison = _build_application(project_path).compare_minimizers(
+            last_commits=last_commits,
+            commit_hash=commit_hash,
+            seed=seed,
+            runtime_tolerance_ms=runtime_tolerance_ms,
+        )
+    except DiffRangeError as error:
+        raise typer.BadParameter(str(error)) from error
+    _print_minimizer_comparison(comparison)
 
 
 @app.command("run-tests")

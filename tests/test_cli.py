@@ -211,6 +211,125 @@ def test_run_minimal_command_accepts_seed_and_runtime_tolerance() -> None:
     assert "Run finished" in result.output
 
 
+def test_run_minimal_command_accepts_commit_hash() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_minimal_project(project_path)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+
+        result = runner.invoke(
+            app,
+            [
+                "run-minimal",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Run finished" in result.output
+
+
+def test_run_minimal_command_rejects_multiple_diff_modes() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_minimal_project(project_path)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+
+        result = runner.invoke(
+            app,
+            [
+                "run-minimal",
+                "--last-commits",
+                "1",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Choose either --last-commits or --commit-hash" in result.output
+
+
+def test_compare_minimizers_command_accepts_last_commits() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "compare-minimizers",
+                "--last-commits",
+                "1",
+                "--seed",
+                "123",
+                "--runtime-tolerance-ms",
+                "25",
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Minimizer comparison" in result.output
+    assert "Greedy" in result.output
+    assert "MOPSO" in result.output
+    assert "Test count" in result.output
+    assert "Estimated runtime (ms)" in result.output
+    assert "Coverage" in result.output
+
+
+def test_compare_minimizers_command_accepts_commit_hash() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+
+        result = runner.invoke(
+            app,
+            [
+                "compare-minimizers",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Minimizer comparison" in result.output
+
+
+def test_compare_minimizers_command_rejects_multiple_diff_modes() -> None:
+    with runner.isolated_filesystem() as isolated:
+        project_path = Path(isolated)
+        _create_git_history(project_path)
+        commit_hash = _git(project_path, "rev-parse", "HEAD")
+
+        result = runner.invoke(
+            app,
+            [
+                "compare-minimizers",
+                "--last-commits",
+                "1",
+                "--commit-hash",
+                commit_hash,
+                "--project-path",
+                str(project_path),
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Choose either --last-commits or --commit-hash" in result.output
+
+
 def test_run_tests_command_runs_all_tests() -> None:
     with runner.isolated_filesystem() as isolated:
         project_path = Path(isolated)

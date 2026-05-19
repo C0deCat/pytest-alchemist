@@ -201,6 +201,29 @@ def test_select_tests_forwards_commit_hash(tmp_path: Path) -> None:
     assert diff_picker.commit_hash == "abc123"
 
 
+def test_run_minimal_forwards_commit_hash(tmp_path: Path) -> None:
+    diff_picker = _FakeDiffPicker(_selection())
+
+    def fake_run_tests(
+        project_path: str,
+        tests: list[TestCase | str] | None,
+        collect_coverage: object,
+        collects_tests: bool,
+    ) -> str:
+        return _write_test_report(Path(project_path), uid="run-minimal", selected_tests=tests)
+
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=diff_picker,
+        run_tests_func=fake_run_tests,
+    )
+
+    app.run_minimal(commit_hash="abc123")
+
+    assert diff_picker.last_commits is None
+    assert diff_picker.commit_hash == "abc123"
+
+
 def test_run_minimal_returns_successful_mock_result(tmp_path: Path) -> None:
     def fake_run_tests(
         project_path: str,
@@ -311,6 +334,19 @@ def test_run_minimal_forwards_minimizer_parameters(tmp_path: Path) -> None:
 
     assert captured["seed"] == 123
     assert captured["runtime_tolerance_ms"] == 25
+
+
+def test_compare_minimizers_returns_greedy_and_mopso_results(tmp_path: Path) -> None:
+    diff_picker = _FakeDiffPicker(_selection())
+    app = AlchemistApplication(project_path=tmp_path, diff_picker=diff_picker)
+
+    comparison = app.compare_minimizers(commit_hash="abc123", seed=123)
+
+    assert diff_picker.last_commits is None
+    assert diff_picker.commit_hash == "abc123"
+    assert [entry.optimizer_name for entry in comparison.entries] == ["Greedy", "MOPSO"]
+    assert [entry.result.selected_test_count for entry in comparison.entries] == [1, 1]
+    assert all(entry.result.coverage_percent == 100.0 for entry in comparison.entries)
 
 
 def test_run_tests_persists_run_and_coverage_artifact(tmp_path: Path) -> None:

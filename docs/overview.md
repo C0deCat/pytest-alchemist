@@ -16,7 +16,8 @@ Current commands:
 
 - `collect-coverage`
 - `select-tests [--last-commits N | --commit-hash HASH]`
-- `run-minimal --last-commits N`
+- `run-minimal [--last-commits N | --commit-hash HASH]`
+- `compare-minimizers [--last-commits N | --commit-hash HASH]`
 - `run-tests [NODEID...]`
 
 Dependencies:
@@ -161,14 +162,24 @@ Rules:
 ## Main Scenario Flow
 
 ```text
-pytest-alchemist run-minimal --last-commits N
+pytest-alchemist run-minimal [--last-commits N | --commit-hash HASH]
   -> cli
-  -> application.run_minimal(N)
-  -> diff_picker.pick_candidates(N)
+  -> application.run_minimal(last_commits=N | commit_hash=HASH)
+  -> diff_picker.pick_candidates(last_commits=N | commit_hash=HASH)
   -> minimizer.minimize(...)
   -> TestRunner.run_tests(...)
   -> test_report.json
   -> database.save_test_run(test_report_path)
+```
+
+```text
+pytest-alchemist compare-minimizers --last-commits N
+  -> cli
+  -> application.compare_minimizers(N)
+  -> diff_picker.pick_candidates(N)
+  -> Minimizer("greedy").minimize(...)
+  -> Minimizer("mopso").minimize(...)
+  -> terminal comparison table
 ```
 
 The same boundaries should be preserved when mocked components are replaced

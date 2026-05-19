@@ -28,6 +28,7 @@ the target project and run commands from that project's development environment.
 uv add --dev pytest-alchemist
 uv run pytest-alchemist collect-coverage
 uv run pytest-alchemist run-minimal --last-commits 3
+uv run pytest-alchemist compare-minimizers --last-commits 3
 ```
 
 For local development against this repository:
@@ -80,6 +81,22 @@ Select and run the minimal test set:
 ```powershell
 uv run pytest-alchemist run-minimal --last-commits 3
 ```
+
+Select and run the minimal test set for one explicit commit:
+
+```powershell
+uv run pytest-alchemist run-minimal --commit-hash abc1234
+```
+
+Compare greedy and MOPSO minimizers without running the selected tests:
+
+```powershell
+uv run pytest-alchemist compare-minimizers --last-commits 3
+uv run pytest-alchemist compare-minimizers --commit-hash abc1234 --seed 123
+```
+
+The comparison reports selected test count, estimated runtime in milliseconds,
+coverage percent, and uncovered target count for each optimizer.
 
 Run pytest through `pytest-alchemist`:
 

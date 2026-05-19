@@ -5,6 +5,7 @@ from pytest_alchemist.diff_picker.models import ChangedCode
 from pytest_alchemist.minimizer import Minimizer
 from pytest_alchemist.minimizer.evaluators import build_coverage_evaluation
 from pytest_alchemist.minimizer.models import MinimizationInput
+from pytest_alchemist.minimizer.greedy import GreedyOptimizer
 from pytest_alchemist.minimizer.mopso.archive import ParetoArchive, dominates
 from pytest_alchemist.minimizer.mopso.objectives import ObjectiveValue, prefers
 from pytest_alchemist.minimizer.mopso.repair import (
@@ -138,6 +139,158 @@ def test_minimizer_is_deterministic_with_seed_and_reports_metrics() -> None:
     assert first.seed == 123
 
 
+def test_greedy_optimizer_selects_covering_subset_and_reports_metrics() -> None:
+    input_data = _input_data()
+    evaluation = build_coverage_evaluation(input_data)
+
+    result = GreedyOptimizer().minimize(input_data, evaluation, seed=123)
+
+    assert [test.nodeid for test in result.selected_tests] == [
+        "tests/test_sample.py::test_a"
+    ]
+    assert result.coverage_percent == 100.0
+    assert result.uncovered_target_count == 0
+    assert result.selected_test_count == 1
+    assert result.estimated_runtime == 0.04
+    assert result.seed == 123
+
+
+def test_greedy_optimizer_keeps_input_order_for_coverage_ties() -> None:
+    candidates = [
+        TestCase("tests/test_sample.py::test_b", "tests/test_sample.py", 0.03),
+        TestCase("tests/test_sample.py::test_a", "tests/test_sample.py", 0.01),
+    ]
+    input_data = MinimizationInput(
+        candidates=candidates,
+        target_changes=[
+            ChangedCode(
+                file_path="src/sample.py",
+                added_lines=[1],
+                modified_lines=[],
+                deleted_lines=[],
+            )
+        ],
+        coverage_records=[
+            CoverageRecord(candidates[0].nodeid, "src/sample.py", [1]),
+            CoverageRecord(candidates[1].nodeid, "src/sample.py", [1]),
+        ],
+    )
+    evaluation = build_coverage_evaluation(input_data)
+
+    result = GreedyOptimizer().minimize(input_data, evaluation)
+
+    assert [test.nodeid for test in result.selected_tests] == [
+        "tests/test_sample.py::test_b"
+    ]
+    assert result.selected_test_count == 1
+    assert result.estimated_runtime == 0.03
+
+
+def test_greedy_optimizer_does_not_prune_redundant_selected_tests() -> None:
+    candidates = [
+        TestCase("tests/test_sample.py::test_a", "tests/test_sample.py", 0.01),
+        TestCase("tests/test_sample.py::test_b", "tests/test_sample.py", 0.02),
+        TestCase("tests/test_sample.py::test_c", "tests/test_sample.py", 0.03),
+        TestCase("tests/test_sample.py::test_d", "tests/test_sample.py", 0.04),
+    ]
+    input_data = MinimizationInput(
+        candidates=candidates,
+        target_changes=[
+            ChangedCode(
+                file_path="src/sample.py",
+                added_lines=[1, 2, 3, 4, 5, 6],
+                modified_lines=[],
+                deleted_lines=[],
+            )
+        ],
+        coverage_records=[
+            CoverageRecord(candidates[0].nodeid, "src/sample.py", [1, 2, 3]),
+            CoverageRecord(candidates[1].nodeid, "src/sample.py", [1, 4]),
+            CoverageRecord(candidates[2].nodeid, "src/sample.py", [2, 5]),
+            CoverageRecord(candidates[3].nodeid, "src/sample.py", [3, 6]),
+        ],
+    )
+    evaluation = build_coverage_evaluation(input_data)
+
+    result = GreedyOptimizer().minimize(input_data, evaluation)
+
+    assert [test.nodeid for test in result.selected_tests] == [
+        "tests/test_sample.py::test_a",
+        "tests/test_sample.py::test_b",
+        "tests/test_sample.py::test_c",
+        "tests/test_sample.py::test_d",
+    ]
+    assert result.selected_test_count == 4
+    assert result.estimated_runtime == 0.1
+
+
+def test_greedy_optimizer_is_deterministic() -> None:
+    input_data = _input_data()
+    evaluation = build_coverage_evaluation(input_data)
+
+    first = GreedyOptimizer().minimize(input_data, evaluation)
+    second = GreedyOptimizer().minimize(input_data, evaluation)
+
+    assert [test.nodeid for test in second.selected_tests] == [
+        test.nodeid for test in first.selected_tests
+    ]
+
+
+def test_minimizer_accepts_optimizer_names_and_instances() -> None:
+    input_data = _input_data()
+    captured: dict[str, object] = {}
+
+    class _FakeOptimizer:
+        def minimize(
+            self,
+            input_data: MinimizationInput,
+            evaluation,
+            seed: int | None = None,
+            runtime_tolerance_ms: int = 10,
+        ):
+            captured["target_count"] = evaluation.target_count
+            captured["seed"] = seed
+            captured["runtime_tolerance_ms"] = runtime_tolerance_ms
+            return Minimizer("greedy").minimize(
+                input_data,
+                seed=seed,
+                runtime_tolerance_ms=runtime_tolerance_ms,
+            )
+
+    default_result = Minimizer().minimize(input_data, seed=123)
+    mopso_result = Minimizer("mopso").minimize(input_data, seed=123)
+    greedy_result = Minimizer("greedy").minimize(input_data, seed=123)
+    fake_result = Minimizer(_FakeOptimizer()).minimize(
+        input_data,
+        seed=456,
+        runtime_tolerance_ms=25,
+    )
+
+    assert [test.nodeid for test in default_result.selected_tests] == [
+        test.nodeid for test in mopso_result.selected_tests
+    ]
+    assert [test.nodeid for test in greedy_result.selected_tests] == [
+        "tests/test_sample.py::test_a"
+    ]
+    assert [test.nodeid for test in fake_result.selected_tests] == [
+        test.nodeid for test in greedy_result.selected_tests
+    ]
+    assert captured == {
+        "target_count": 2,
+        "seed": 456,
+        "runtime_tolerance_ms": 25,
+    }
+
+
+def test_minimizer_rejects_unknown_optimizer_name() -> None:
+    try:
+        Minimizer("unknown")  # type: ignore[arg-type]
+    except ValueError as error:
+        assert str(error) == "Unknown optimizer: unknown"
+    else:
+        raise AssertionError("Expected unknown optimizer name to fail.")
+
+
 def test_minimizer_returns_empty_subset_when_no_coverable_lines_exist() -> None:
     candidate = TestCase("tests/test_sample.py::test_a", "tests/test_sample.py", 0.01)
     result = Minimizer().minimize(
@@ -161,3 +314,31 @@ def test_minimizer_returns_empty_subset_when_no_coverable_lines_exist() -> None:
     assert result.uncovered_target_count == 1
     assert result.selected_test_count == 0
     assert result.estimated_runtime == 0.0
+
+
+def test_greedy_optimizer_returns_empty_subset_when_no_coverable_lines_exist() -> None:
+    candidate = TestCase("tests/test_sample.py::test_a", "tests/test_sample.py", 0.01)
+    input_data = MinimizationInput(
+        candidates=[candidate],
+        target_changes=[
+            ChangedCode(
+                file_path="src/sample.py",
+                added_lines=[10],
+                modified_lines=[],
+                deleted_lines=[],
+            )
+        ],
+        coverage_records=[],
+    )
+    result = GreedyOptimizer().minimize(
+        input_data,
+        build_coverage_evaluation(input_data),
+        seed=123,
+    )
+
+    assert result.selected_tests == []
+    assert result.coverage_percent == 0.0
+    assert result.uncovered_target_count == 1
+    assert result.selected_test_count == 0
+    assert result.estimated_runtime == 0.0
+    assert result.seed == 123

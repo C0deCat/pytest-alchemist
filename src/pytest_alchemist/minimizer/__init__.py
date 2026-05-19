@@ -1,6 +1,10 @@
 """Test set minimization algorithms."""
 
-from pytest_alchemist.minimizer.interface import MinimizerInterface
+from pytest_alchemist.minimizer.interface import (
+    MinimizerInterface,
+    OptimizerInterface,
+    OptimizerName,
+)
 from pytest_alchemist.minimizer.minimizer import Minimizer
 from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationResult
 
@@ -9,4 +13,6 @@ __all__ = [
     "MinimizationResult",
     "Minimizer",
     "MinimizerInterface",
+    "OptimizerInterface",
+    "OptimizerName",
 ]
