@@ -1,8 +1,10 @@
 from pathlib import Path
 import subprocess
 
+from rich.console import Console
 from typer.testing import CliRunner
 
+import pytest_alchemist.cli as cli_module
 from pytest_alchemist.cli import app
 
 
@@ -77,6 +79,34 @@ def _create_git_history(project_path: Path) -> None:
     module_path.write_text("VALUE = 2\n", encoding="utf-8")
     _git(project_path, "add", ".")
     _git(project_path, "commit", "-m", "change")
+
+
+def test_no_subcommand_prints_help_when_non_interactive() -> None:
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "Usage:" in result.output
+    assert "collect-coverage" in result.output
+
+
+def test_no_subcommand_launches_dashboard_when_interactive(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_dashboard(**kwargs) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(force_interactive=True, force_terminal=False),
+    )
+    monkeypatch.setattr("pytest_alchemist.interactive.run_dashboard", fake_run_dashboard)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["activity_runner"] is cli_module._run_with_activity
 
 
 def test_collect_coverage_command() -> None:

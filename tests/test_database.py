@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 from pytest_alchemist.database.facade import DATABASE_FILE_NAME, DatabaseFacade
@@ -11,6 +12,17 @@ from pytest_alchemist.coverage_analysis.models import (
     CoverageEntity,
     CoverageLineFact,
 )
+
+
+def _git(project_path: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=project_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
 
 
 def _write_test_report(
@@ -98,6 +110,7 @@ def test_database_facade_creates_sqlite_schema(tmp_path: Path) -> None:
                 for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
             }
             for table_name in (
+                "test_runs",
                 "tests",
                 "coverage_artifacts",
                 "coverage_entities",
@@ -106,6 +119,11 @@ def test_database_facade_creates_sqlite_schema(tmp_path: Path) -> None:
             )
         }
 
+    assert {
+        "git_branch",
+        "git_commit",
+        "git_is_dirty",
+    }.issubset(columns_by_table["test_runs"])
     assert {
         "normalized_hash",
         "current_revision",
@@ -165,6 +183,39 @@ def test_save_test_run_persists_run_without_coverage(tmp_path: Path) -> None:
         "tests/test_sample.py::test_one",
     ]
     assert artifacts == []
+    assert run["git_branch"] is None
+    assert run["git_commit"] is None
+    assert run["git_is_dirty"] is None
+
+
+def test_save_test_run_persists_git_metadata(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "tests@example.com")
+    _git(tmp_path, "config", "user.name", "Tests")
+    (tmp_path / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "baseline")
+    (tmp_path / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    database = DatabaseFacade(project_path=tmp_path)
+    report_path = _write_test_report(tmp_path, uid="run-git")
+
+    database.save_test_run(report_path)
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        run = connection.execute(
+            """
+            SELECT git_branch, git_commit, git_is_dirty
+            FROM test_runs
+            WHERE uid = ?
+            """,
+            ("run-git",),
+        ).fetchone()
+
+    assert run["git_branch"] in {"master", "main"}
+    assert run["git_commit"] == _git(tmp_path, "rev-parse", "HEAD")
+    assert run["git_is_dirty"] == 1
 
 
 def test_save_test_run_persists_coverage_artifact(tmp_path: Path) -> None:
