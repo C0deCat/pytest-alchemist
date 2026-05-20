@@ -6,6 +6,7 @@ import hashlib
 import json
 import ast
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ class DatabaseFacade:
         self.database_path = self.artifacts_path / DATABASE_FILE_NAME
         self.artifacts_path.mkdir(parents=True, exist_ok=True)
         self._initialize_schema()
+
     def list_tests(self) -> list[TestCase]:
         """Return tests currently known from SQLite."""
 
@@ -131,6 +133,60 @@ class DatabaseFacade:
                 """
             ).fetchone()
         return str(row["quality"]) if row else None
+
+    def get_latest_coverage_status(self) -> dict[str, Any] | None:
+        """Return dashboard metadata for the latest normalized coverage artifact."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                  ca.run_uid,
+                  ca.created_at,
+                  ca.quality,
+                  tr.git_branch,
+                  tr.git_commit,
+                  tr.git_is_dirty
+                FROM coverage_artifacts ca
+                LEFT JOIN test_runs tr ON tr.uid = ca.run_uid
+                WHERE ca.format = 'sqlite'
+                  AND ca.quality IS NOT NULL
+                ORDER BY ca.created_at DESC, ca.id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_test_run_status(self) -> dict[str, Any] | None:
+        """Return dashboard metadata for the latest persisted test run."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                  uid,
+                  finished_at,
+                  status,
+                  git_branch,
+                  git_commit,
+                  git_is_dirty
+                FROM test_runs
+                ORDER BY created_at DESC, uid DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_dashboard_counts(self) -> dict[str, int]:
+        """Return project-local counts needed by the interactive dashboard."""
+
+        with self._connect() as connection:
+            return {
+                "coverage_entity_count": _count_table(connection, "coverage_entities"),
+                "coverage_line_fact_count": _count_table(connection, "coverage_line_facts"),
+                "coverage_arc_fact_count": _count_table(connection, "coverage_arc_facts"),
+                "known_test_count": _count_table(connection, "tests"),
+            }
 
     def save_coverage_artifact_metadata(
         self,
@@ -404,6 +460,7 @@ class DatabaseFacade:
         selected_nodeids = report["selection"]["selected_tests"]
         coverage_enabled = int(coverage is not None)
         duration_ms = int(round(float(report["duration_seconds"]) * 1000))
+        git_branch, git_commit, git_is_dirty = _read_git_snapshot(project_root)
 
         with self._connect() as connection:
             connection.execute(
@@ -423,9 +480,12 @@ class DatabaseFacade:
                   stderr_path,
                   project_root,
                   pytest_args_json,
+                  git_branch,
+                  git_commit,
+                  git_is_dirty,
                   created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_uid,
@@ -442,6 +502,9 @@ class DatabaseFacade:
                     pytest_data["stderr_path"],
                     report["project_root"],
                     json.dumps(pytest_data["args"]),
+                    git_branch,
+                    git_commit,
+                    None if git_is_dirty is None else int(git_is_dirty),
                     now,
                 ),
             )
@@ -503,6 +566,9 @@ class DatabaseFacade:
                   stderr_path TEXT,
                   project_root TEXT NOT NULL,
                   pytest_args_json TEXT NOT NULL DEFAULT '[]',
+                  git_branch TEXT,
+                  git_commit TEXT,
+                  git_is_dirty INTEGER,
                   created_at TEXT NOT NULL
                 );
 
@@ -588,6 +654,12 @@ class DatabaseFacade:
                 );
                 """
             )
+            for column_name, column_type in (
+                ("git_branch", "TEXT"),
+                ("git_commit", "TEXT"),
+                ("git_is_dirty", "INTEGER"),
+            ):
+                _ensure_column(connection, "test_runs", column_name, column_type)
             for column_name, column_type in (
                 ("coverage_py_version", "TEXT"),
                 ("has_contexts", "INTEGER"),
@@ -716,6 +788,10 @@ def _ensure_column(
     connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
+def _count_table(connection: sqlite3.Connection, table_name: str) -> int:
+    return int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+
+
 def _file_path_from_nodeid(nodeid: str) -> str:
     return nodeid.split("::", maxsplit=1)[0]
 
@@ -763,6 +839,30 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_git_snapshot(project_path: Path) -> tuple[str | None, str | None, bool | None]:
+    branch = _git_stdout(project_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    commit = _git_stdout(project_path, ["rev-parse", "HEAD"])
+    if branch is None or commit is None:
+        return None, None, None
+
+    status = _git_stdout(project_path, ["status", "--porcelain"])
+    return branch, commit, None if status is None else bool(status)
+
+
+def _git_stdout(project_path: Path, args: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=project_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return completed.stdout.strip()
 
 
 def _timestamp() -> str:

@@ -3,10 +3,17 @@
 import json
 from pathlib import Path
 from typing import Any
+from typing import Callable
+from typing import TypeVar
 from typing import cast
 
 import typer
 from rich.console import Console
+from rich.progress import BarColumn
+from rich.progress import Progress
+from rich.progress import SpinnerColumn
+from rich.progress import TextColumn
+from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
 from pytest_alchemist.application import AlchemistApplication
@@ -16,10 +23,29 @@ from pytest_alchemist.test_runner.runner import CoverageFormat
 
 app = typer.Typer(help="Minimize Python test runs using historical coverage.")
 console = Console()
+T = TypeVar("T")
 
 
 def _build_application(project_path: Path | None = None) -> AlchemistApplication:
     return AlchemistApplication(project_path=project_path)
+
+
+def _run_with_activity(message: str, operation: Callable[[], T]) -> T:
+    """Run a slow CLI operation with live terminal feedback when possible."""
+
+    if not console.is_interactive:
+        return operation()
+
+    with Progress(
+        SpinnerColumn(style="cyan"),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(bar_width=None),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        progress.add_task(message, total=None)
+        return operation()
 
 
 def _normalize_coverage_format(value: str | None) -> CoverageFormat | None:
@@ -96,13 +122,41 @@ def _print_minimizer_comparison(comparison: MinimizerComparison) -> None:
     console.print(table)
 
 
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    project_path: Path | None = typer.Option(None, "--project-path"),
+) -> None:
+    """Open the interactive dashboard when no subcommand is provided."""
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not console.is_interactive:
+        console.print(ctx.get_help())
+        return
+
+    from pytest_alchemist.interactive import run_dashboard
+
+    run_dashboard(
+        project_path=project_path,
+        console=console,
+        activity_runner=_run_with_activity,
+        report_printer=_print_test_report_summary,
+        comparison_printer=_print_minimizer_comparison,
+    )
+
+
 @app.command("collect-coverage")
 def collect_coverage(
     project_path: Path | None = typer.Option(None, "--project-path"),
 ) -> None:
     """Collect coverage data for the current project."""
 
-    result = _build_application(project_path).collect_coverage()
+    result = _run_with_activity(
+        "Collecting coverage with pytest and normalizing facts...",
+        lambda: _build_application(project_path).collect_coverage(),
+    )
     console.print(
         f"Collected coverage for run {result.run_uid}: "
         f"{result.entity_count} entities, {result.line_fact_count} line facts, "
@@ -123,9 +177,12 @@ def select_tests(
     last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
 
     try:
-        result = _build_application(project_path).select_tests(
-            last_commits=last_commits,
-            commit_hash=commit_hash,
+        result = _run_with_activity(
+            "Inspecting git changes and matching historical coverage...",
+            lambda: _build_application(project_path).select_tests(
+                last_commits=last_commits,
+                commit_hash=commit_hash,
+            ),
         )
     except DiffRangeError as error:
         raise typer.BadParameter(str(error)) from error
@@ -161,11 +218,14 @@ def run_minimal(
     last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
 
     try:
-        test_report_path = _build_application(project_path).run_minimal(
-            last_commits=last_commits,
-            commit_hash=commit_hash,
-            seed=seed,
-            runtime_tolerance_ms=runtime_tolerance_ms,
+        test_report_path = _run_with_activity(
+            "Selecting, minimizing, and running the affected test set...",
+            lambda: _build_application(project_path).run_minimal(
+                last_commits=last_commits,
+                commit_hash=commit_hash,
+                seed=seed,
+                runtime_tolerance_ms=runtime_tolerance_ms,
+            ),
         )
     except DiffRangeError as error:
         raise typer.BadParameter(str(error)) from error
@@ -189,11 +249,14 @@ def compare_minimizers(
     last_commits, commit_hash = _resolve_diff_options(last_commits, commit_hash)
 
     try:
-        comparison = _build_application(project_path).compare_minimizers(
-            last_commits=last_commits,
-            commit_hash=commit_hash,
-            seed=seed,
-            runtime_tolerance_ms=runtime_tolerance_ms,
+        comparison = _run_with_activity(
+            "Comparing minimizers against the affected coverage set...",
+            lambda: _build_application(project_path).compare_minimizers(
+                last_commits=last_commits,
+                commit_hash=commit_hash,
+                seed=seed,
+                runtime_tolerance_ms=runtime_tolerance_ms,
+            ),
         )
     except DiffRangeError as error:
         raise typer.BadParameter(str(error)) from error
@@ -209,9 +272,20 @@ def run_tests(
 ) -> None:
     """Run pytest tests in the target project."""
 
-    test_report_path = _build_application(project_path).run_tests(
-        tests=nodeids,
-        collect_coverage=_normalize_coverage_format(collect_coverage),
-        collects_tests=collects_tests,
+    coverage_format = _normalize_coverage_format(collect_coverage)
+    if nodeids:
+        message = f"Running {len(nodeids)} selected pytest test(s)..."
+    else:
+        message = "Running pytest test suite..."
+    if coverage_format is not None:
+        message = f"{message[:-3]} with {coverage_format} coverage..."
+
+    test_report_path = _run_with_activity(
+        message,
+        lambda: _build_application(project_path).run_tests(
+            tests=nodeids,
+            collect_coverage=coverage_format,
+            collects_tests=collects_tests,
+        ),
     )
     _print_test_report_summary(test_report_path)

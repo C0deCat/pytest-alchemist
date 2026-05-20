@@ -3,7 +3,14 @@ import sqlite3
 from pathlib import Path
 
 from pytest_alchemist.application import AlchemistApplication
-from pytest_alchemist.coverage_analysis.models import CoverageRecord
+from pytest_alchemist.coverage_analysis.models import (
+    CoverageArcFact,
+    CoverageArtifactMetadata,
+    CoverageEntity,
+    CoverageLineFact,
+    CoverageRecord,
+)
+from pytest_alchemist.database.facade import DatabaseFacade
 from pytest_alchemist.diff_picker.models import (
     ChangedCode,
     MatchEvidence,
@@ -261,6 +268,80 @@ def test_application_accepts_explicit_project_path(tmp_path: Path) -> None:
     app = AlchemistApplication(project_path=tmp_path)
 
     assert app.project_path == tmp_path.resolve()
+
+
+def test_get_project_status_returns_latest_coverage_state(tmp_path: Path) -> None:
+    database = DatabaseFacade(project_path=tmp_path)
+    report_path = _write_test_report(
+        tmp_path,
+        uid="run-status",
+        selected_tests=["tests/test_sample.py::test_one"],
+    )
+    database.save_test_run(report_path)
+    database.save_coverage_artifact_metadata(
+        CoverageArtifactMetadata(
+            run_uid="run-status",
+            path=str(Path(report_path).parent / ".coverage"),
+            sha256="abc",
+            coverage_py_version="7.13.5",
+            has_contexts=True,
+            has_arcs=True,
+            quality="complete",
+        )
+    )
+    database.replace_coverage_facts(
+        "run-status",
+        [
+            CoverageEntity(
+                id=1,
+                file_path="sample.py",
+                module_name="sample",
+                qualified_name="sample",
+                kind="module",
+                start_line=1,
+                end_line=3,
+                normalized_hash="hash",
+                current_revision=1,
+                parent_id=None,
+            )
+        ],
+        [
+            CoverageLineFact(
+                nodeid="tests/test_sample.py::test_one",
+                phase="run",
+                entity_id=1,
+                raw_line=1,
+                entity_line_offset=0,
+            )
+        ],
+        [
+            CoverageArcFact(
+                nodeid="tests/test_sample.py::test_one",
+                phase="run",
+                entity_id=1,
+                from_line=1,
+                to_line=2,
+                from_offset=0,
+                to_offset=1,
+                arc_hash="arc",
+            )
+        ],
+    )
+
+    status = AlchemistApplication(project_path=tmp_path, database=database).get_project_status()
+
+    assert status.project_path == tmp_path.resolve()
+    assert status.latest_coverage_run_uid == "run-status"
+    assert status.latest_coverage_quality == "complete"
+    assert status.latest_run_uid == "run-status"
+    assert status.latest_run_status == "passed"
+    assert status.coverage_entity_count == 1
+    assert status.coverage_line_fact_count == 1
+    assert status.coverage_arc_fact_count == 1
+    assert status.known_test_count == 1
+    assert status.git.branch is None
+    assert status.git.commit is None
+    assert status.git.is_dirty is None
 
 
 def test_run_minimal_passes_project_path_to_runner(tmp_path: Path) -> None:
