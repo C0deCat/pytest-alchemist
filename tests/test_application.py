@@ -168,6 +168,27 @@ def _selection() -> TestSelection:
     )
 
 
+def _empty_selection() -> TestSelection:
+    return TestSelection(
+        candidates=[],
+        target_changes=[
+            ChangedCode(
+                file_path="src/sample.py",
+                added_lines=[2],
+                modified_lines=[],
+                deleted_lines=[],
+            )
+        ],
+        coverage_records=[],
+        evidence=[],
+        diagnostics=SelectionDiagnostics(
+            codes=["no_matching_coverage"],
+            warnings=["No current coverage facts overlap the changed current lines."],
+            coverage_quality="complete",
+        ),
+    )
+
+
 def test_collect_coverage_runs_pytest_and_normalizes_coverage(tmp_path: Path) -> None:
     _create_pytest_project(tmp_path)
     app = AlchemistApplication(project_path=tmp_path)
@@ -252,6 +273,36 @@ def test_run_minimal_returns_successful_mock_result(tmp_path: Path) -> None:
     assert report["exit_code"] == 0
     assert report["summary"]["failed"] == 0
     assert report["summary"]["passed"] == len(report["selection"]["selected_tests"])
+
+
+def test_run_minimal_preserves_empty_selection(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_tests(
+        project_path: str,
+        tests: list[TestCase | str] | None,
+        collect_coverage: object,
+        collects_tests: bool,
+    ) -> str:
+        captured["tests"] = tests
+        return _write_test_report(
+            Path(project_path),
+            uid="run-minimal",
+            selected_tests=tests,
+        )
+
+    app = AlchemistApplication(
+        project_path=tmp_path,
+        diff_picker=_FakeDiffPicker(_empty_selection()),
+        run_tests_func=fake_run_tests,
+    )
+
+    test_report_path = app.run_minimal(last_commits=3)
+    report = json.loads(Path(test_report_path).read_text(encoding="utf-8"))
+
+    assert captured["tests"] == []
+    assert report["selection"]["selected_tests"] == []
+    assert report["summary"]["total"] == 0
 
 
 def test_application_defaults_project_path_to_cwd(

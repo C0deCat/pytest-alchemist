@@ -301,26 +301,15 @@ class DatabaseFacade:
                     entity_revision_map[entity.id] = entity.current_revision
 
             now = _timestamp()
+            test_revision_cache: dict[str, int] = {}
+            line_fact_rows = []
             for fact in line_facts:
-                observed_test_revision = self._current_test_revision(
+                observed_test_revision = self._current_test_revision_cached(
                     connection,
                     fact.nodeid,
+                    test_revision_cache,
                 )
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO coverage_line_facts (
-                      nodeid,
-                      phase,
-                      entity_id,
-                      raw_line,
-                      entity_line_offset,
-                      observed_entity_revision,
-                      observed_test_revision,
-                      last_confirmed_run_uid,
-                      last_confirmed_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                line_fact_rows.append(
                     (
                         fact.nodeid,
                         fact.phase,
@@ -331,32 +320,34 @@ class DatabaseFacade:
                         observed_test_revision,
                         run_uid,
                         now,
-                    ),
+                    )
                 )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO coverage_line_facts (
+                  nodeid,
+                  phase,
+                  entity_id,
+                  raw_line,
+                  entity_line_offset,
+                  observed_entity_revision,
+                  observed_test_revision,
+                  last_confirmed_run_uid,
+                  last_confirmed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                line_fact_rows,
+            )
 
+            arc_fact_rows = []
             for fact in arc_facts:
-                observed_test_revision = self._current_test_revision(
+                observed_test_revision = self._current_test_revision_cached(
                     connection,
                     fact.nodeid,
+                    test_revision_cache,
                 )
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO coverage_arc_facts (
-                      nodeid,
-                      phase,
-                      entity_id,
-                      from_line,
-                      to_line,
-                      from_offset,
-                      to_offset,
-                      arc_hash,
-                      observed_entity_revision,
-                      observed_test_revision,
-                      last_confirmed_run_uid,
-                      last_confirmed_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                arc_fact_rows.append(
                     (
                         fact.nodeid,
                         fact.phase,
@@ -370,8 +361,28 @@ class DatabaseFacade:
                         observed_test_revision,
                         run_uid,
                         now,
-                    ),
+                    )
                 )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO coverage_arc_facts (
+                  nodeid,
+                  phase,
+                  entity_id,
+                  from_line,
+                  to_line,
+                  from_offset,
+                  to_offset,
+                  arc_hash,
+                  observed_entity_revision,
+                  observed_test_revision,
+                  last_confirmed_run_uid,
+                  last_confirmed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arc_fact_rows,
+            )
 
     def list_coverage_tests(self) -> list[str]:
         """Return test node ids observed in current normalized coverage facts."""
@@ -731,6 +742,16 @@ class DatabaseFacade:
             (nodeid,),
         ).fetchone()
         return int(row["current_revision"]) if row else 1
+
+    def _current_test_revision_cached(
+        self,
+        connection: sqlite3.Connection,
+        nodeid: str,
+        cache: dict[str, int],
+    ) -> int:
+        if nodeid not in cache:
+            cache[nodeid] = self._current_test_revision(connection, nodeid)
+        return cache[nodeid]
 
 
 def _coverage_paths(report: dict[str, Any]) -> list[tuple[str, str]]:

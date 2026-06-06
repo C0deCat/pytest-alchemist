@@ -1,5 +1,8 @@
 import sqlite3
+import sys
 from pathlib import Path
+
+import coverage
 
 from pytest_alchemist.coverage_analysis.analyzer import (
     CoverageAnalyzer,
@@ -144,3 +147,88 @@ def test_coverage_analyzer_persists_context_entities_lines_and_arcs(
     assert artifact["quality"] == "complete"
     assert artifact["has_contexts"] == 1
     assert artifact["has_arcs"] == 1
+
+
+def test_coverage_analyzer_prefers_parallel_artifact_with_contexts_and_arcs(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "calc.py"
+    source_path.write_text(
+        "\n".join(
+            [
+                "def classify(value):",
+                "    if value > 0:",
+                "        return 'positive'",
+                "    return 'other'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tests_path = tmp_path / "tests"
+    tests_path.mkdir()
+    (tests_path / "test_calc.py").write_text(
+        "\n".join(
+            [
+                "from calc import classify",
+                "",
+                "def test_positive():",
+                "    assert classify(1) == 'positive'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = DatabaseFacade(tmp_path)
+    test_report_path = TestRunner().run_tests(str(tmp_path), collect_coverage="sqlite")
+    report_dir = Path(test_report_path).parent
+    base_coverage_path = report_dir / ".coverage"
+    parallel_coverage_path = report_dir / ".coverage.worker"
+    base_coverage_path.replace(parallel_coverage_path)
+    _write_statement_only_coverage(base_coverage_path, source_path)
+
+    database.save_test_run(test_report_path)
+    result = CoverageAnalyzer(database).collect_from_report(test_report_path)
+
+    assert result.quality == "complete"
+    assert result.line_fact_count > 0
+    assert result.arc_fact_count > 0
+    assert any("parallel coverage artifact" in warning for warning in result.warnings)
+
+    with sqlite3.connect(database.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        artifact = connection.execute(
+            """
+            SELECT path, quality, has_contexts, has_arcs
+            FROM coverage_artifacts
+            WHERE run_uid = ? AND format = 'sqlite' AND quality IS NOT NULL
+            """,
+            (result.run_uid,),
+        ).fetchone()
+
+    assert artifact["path"] == str(parallel_coverage_path)
+    assert artifact["quality"] == "complete"
+    assert artifact["has_contexts"] == 1
+    assert artifact["has_arcs"] == 1
+
+
+def _write_statement_only_coverage(coverage_path: Path, source_path: Path) -> None:
+    old_path = list(sys.path)
+    sys.path.insert(0, str(source_path.parent))
+    try:
+        cov = coverage.Coverage(data_file=str(coverage_path), branch=False)
+        namespace: dict[str, object] = {}
+        cov.start()
+        try:
+            code = compile(
+                source_path.read_text(encoding="utf-8"),
+                str(source_path),
+                "exec",
+            )
+            exec(code, namespace)
+            namespace["classify"](1)  # type: ignore[index,operator]
+        finally:
+            cov.stop()
+        cov.save()
+    finally:
+        sys.path[:] = old_path

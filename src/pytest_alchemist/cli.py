@@ -9,6 +9,7 @@ from typing import cast
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
@@ -192,7 +193,7 @@ def select_tests(
     table.add_column("Estimated duration", justify="right")
 
     for test in result.candidates:
-        table.add_row(test.nodeid, f"{test.estimated_duration:.2f}s")
+        table.add_row(escape(test.nodeid), f"{test.estimated_duration:.2f}s")
 
     console.print(table)
     if not result.candidates:
@@ -283,7 +284,7 @@ def run_tests(
     test_report_path = _run_with_activity(
         message,
         lambda: _build_application(project_path).run_tests(
-            tests=nodeids,
+            tests=nodeids or None,
             collect_coverage=coverage_format,
             collects_tests=collects_tests,
         ),

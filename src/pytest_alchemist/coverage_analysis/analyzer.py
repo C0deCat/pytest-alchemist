@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,30 +54,33 @@ class CoverageAnalyzer:
             return self._unreadable_result(run_uid, "test report has no .coverage path")
 
         coverage_path = Path(coverage_path_value)
-        if not coverage_path.exists():
-            return self._unreadable_result(run_uid, f".coverage file is missing: {coverage_path}")
+        selected_coverage = _select_coverage_data(coverage_path)
+        if selected_coverage is None:
+            return self._unreadable_result(
+                run_uid,
+                f"no readable .coverage artifact found near: {coverage_path}",
+            )
 
-        try:
-            data = CoverageData(basename=str(coverage_path))
-            data.read()
-        except Exception as error:  # Coverage.py raises several data exceptions.
-            return self._unreadable_result(run_uid, f"could not read .coverage: {error}")
-
-        contexts = set(data.measured_contexts())
-        parsed_contexts = {
-            context: parsed
-            for context in contexts
-            if (parsed := parse_pytest_context(context)) is not None
-        }
-        has_contexts = bool(parsed_contexts)
-        has_arcs = data.has_arcs()
-        warnings: list[str] = []
+        data = selected_coverage.data
+        coverage_path = selected_coverage.path
+        contexts = selected_coverage.contexts
+        parsed_contexts = selected_coverage.parsed_contexts
+        has_contexts = selected_coverage.has_contexts
+        has_arcs = selected_coverage.has_arcs
+        warnings: list[str] = list(selected_coverage.warnings)
         if "" in contexts:
             warnings.append("empty coverage context was ignored for per-test facts")
         if not has_contexts:
-            warnings.append("no pytest-cov test contexts found")
+            warnings.append(
+                "no pytest-cov test contexts found; run coverage through "
+                "pytest-alchemist or pytest-cov with --cov-context=test"
+            )
         if not has_arcs:
-            warnings.append("coverage artifact has no branch arcs")
+            warnings.append(
+                "coverage artifact has no branch arcs; pytest-alchemist passes "
+                "--cov-branch, but existing statement-only artifacts can still "
+                "break pytest-cov combine"
+            )
 
         entities: list[CoverageEntity] = []
         line_facts: list[CoverageLineFact] = []
@@ -85,6 +89,11 @@ class CoverageAnalyzer:
         source_mismatch = False
         partial = False
         next_entity_id = 1
+        sqlite_arc_rows_by_file = (
+            _sqlite_arc_rows_by_file(coverage_path, project_root, parsed_contexts)
+            if has_arcs
+            else None
+        )
 
         for measured_file in sorted(data.measured_files()):
             source_path = _resolve_project_file(project_root, measured_file)
@@ -115,6 +124,51 @@ class CoverageAnalyzer:
                 continue
 
             entities.extend(file_index.entities)
+
+            if sqlite_arc_rows_by_file is not None:
+                line_fact_keys: set[tuple[str, str, int, int]] = set()
+                for row in sqlite_arc_rows_by_file.get(relative_file, []):
+                    entity = file_index.entity_for_arc(row.from_line, row.to_line)
+                    from_offset = _line_offset(entity, row.from_line)
+                    to_offset = _line_offset(entity, row.to_line)
+                    arc_facts.append(
+                        CoverageArcFact(
+                            nodeid=row.nodeid,
+                            phase=row.phase,
+                            entity_id=entity.id or 0,
+                            from_line=row.from_line,
+                            to_line=row.to_line,
+                            from_offset=from_offset,
+                            to_offset=to_offset,
+                            arc_hash=_arc_hash(entity, from_offset, to_offset),
+                        )
+                    )
+                    covered_files.add(relative_file)
+
+                    for raw_line in (row.from_line, row.to_line):
+                        if raw_line <= 0:
+                            continue
+                        line_entity = file_index.entity_for_line(raw_line)
+                        key = (
+                            row.nodeid,
+                            row.phase,
+                            line_entity.id or 0,
+                            raw_line,
+                        )
+                        if key in line_fact_keys:
+                            continue
+                        line_fact_keys.add(key)
+                        line_facts.append(
+                            CoverageLineFact(
+                                nodeid=row.nodeid,
+                                phase=row.phase,
+                                entity_id=line_entity.id or 0,
+                                raw_line=raw_line,
+                                entity_line_offset=_line_offset(line_entity, raw_line),
+                            )
+                        )
+                        covered_files.add(relative_file)
+                continue
 
             for context, (nodeid, phase) in parsed_contexts.items():
                 data.set_query_context(context)
@@ -201,6 +255,174 @@ def parse_pytest_context(context: str) -> tuple[str, str] | None:
 
     normalized_phase = phase if phase in VALID_PHASES else "unknown"
     return nodeid, normalized_phase
+
+
+@dataclass(frozen=True)
+class _CoverageDataCandidate:
+    path: Path
+    data: CoverageData
+    contexts: set[str]
+    parsed_contexts: dict[str, tuple[str, str]]
+    has_arcs: bool
+    measured_file_count: int
+    warnings: tuple[str, ...]
+
+    @property
+    def has_contexts(self) -> bool:
+        return bool(self.parsed_contexts)
+
+
+@dataclass(frozen=True)
+class _SqliteArcRow:
+    nodeid: str
+    phase: str
+    from_line: int
+    to_line: int
+
+
+def _select_coverage_data(base_path: Path) -> _CoverageDataCandidate | None:
+    candidates: list[_CoverageDataCandidate] = []
+    warnings: list[str] = []
+
+    for path in _coverage_candidate_paths(base_path):
+        try:
+            data = CoverageData(basename=str(path))
+            data.read()
+            contexts = set(data.measured_contexts())
+            parsed_contexts = {
+                context: parsed
+                for context in contexts
+                if (parsed := parse_pytest_context(context)) is not None
+            }
+            candidates.append(
+                _CoverageDataCandidate(
+                    path=path,
+                    data=data,
+                    contexts=contexts,
+                    parsed_contexts=parsed_contexts,
+                    has_arcs=data.has_arcs(),
+                    measured_file_count=len(list(data.measured_files())),
+                    warnings=(),
+                )
+            )
+        except Exception as error:  # Coverage.py raises several data exceptions.
+            warnings.append(f"could not read coverage artifact {path}: {error}")
+
+    if not candidates:
+        return None
+
+    selected = max(
+        candidates,
+        key=lambda candidate: _coverage_candidate_score(candidate),
+    )
+    selected_warnings = list(warnings)
+    if selected.path != base_path:
+        selected_warnings.append(
+            "using pytest-cov parallel coverage artifact instead of degraded "
+            f"base file: {selected.path}"
+        )
+    return _CoverageDataCandidate(
+        path=selected.path,
+        data=selected.data,
+        contexts=selected.contexts,
+        parsed_contexts=selected.parsed_contexts,
+        has_arcs=selected.has_arcs,
+        measured_file_count=selected.measured_file_count,
+        warnings=tuple(selected_warnings),
+    )
+
+
+def _coverage_candidate_paths(base_path: Path) -> list[Path]:
+    paths: list[Path] = []
+    if base_path.exists() and base_path.is_file():
+        paths.append(base_path)
+
+    if base_path.parent.exists():
+        siblings = sorted(
+            (
+                path
+                for path in base_path.parent.glob(f"{base_path.name}.*")
+                if path.is_file()
+            ),
+            key=lambda path: path.name,
+        )
+        paths.extend(path for path in siblings if path not in paths)
+
+    return paths
+
+
+def _coverage_candidate_score(
+    candidate: _CoverageDataCandidate,
+) -> tuple[int, int, int, int]:
+    return (
+        int(candidate.has_contexts and candidate.has_arcs),
+        int(candidate.has_contexts),
+        int(candidate.has_arcs),
+        len(candidate.parsed_contexts) + candidate.measured_file_count,
+    )
+
+
+def _sqlite_arc_rows_by_file(
+    coverage_path: Path,
+    project_root: Path,
+    parsed_contexts: dict[str, tuple[str, str]],
+) -> dict[str, list[_SqliteArcRow]] | None:
+    try:
+        with sqlite3.connect(coverage_path) as connection:
+            table_names = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {"arc", "file", "context"}.issubset(table_names):
+                return None
+            file_paths = {}
+            for file_id, file_path in connection.execute("SELECT id, path FROM file"):
+                source_path = _resolve_project_file(project_root, str(file_path))
+                if source_path is None or source_path.suffix != ".py":
+                    continue
+                file_paths[int(file_id)] = source_path.relative_to(
+                    project_root
+                ).as_posix()
+
+            contexts = {}
+            for context_id, context in connection.execute(
+                "SELECT id, context FROM context"
+            ):
+                parsed_context = parsed_contexts.get(str(context))
+                if parsed_context is not None:
+                    contexts[int(context_id)] = parsed_context
+
+            rows = connection.execute(
+                """
+                SELECT file_id, context_id, fromno, tono
+                FROM arc
+                ORDER BY file_id, context_id, fromno, tono
+                """
+            )
+
+            rows_by_file: dict[str, list[_SqliteArcRow]] = {}
+            for file_id, context_id, from_line, to_line in rows:
+                relative_file = file_paths.get(int(file_id))
+                if relative_file is None:
+                    continue
+                parsed_context = contexts.get(int(context_id))
+                if parsed_context is None:
+                    continue
+                nodeid, phase = parsed_context
+                rows_by_file.setdefault(relative_file, []).append(
+                    _SqliteArcRow(
+                        nodeid=nodeid,
+                        phase=phase,
+                        from_line=int(from_line),
+                        to_line=int(to_line),
+                    )
+                )
+    except sqlite3.Error:
+        return None
+
+    return rows_by_file
 
 
 @dataclass(frozen=True)

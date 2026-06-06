@@ -48,8 +48,19 @@ class TestRunner:
                 f"Project path is not a directory: {resolved_project_path}"
             )
 
-        selected_tests = list(tests or [])
-        nodeids = [_to_nodeid(test) for test in selected_tests]
+        selected_tests = None if tests is None else list(tests)
+        if selected_tests is not None and not selected_tests:
+            return _write_empty_selection_report(
+                resolved_project_path,
+                collect_coverage,
+                collects_tests,
+            )
+
+        nodeids = (
+            []
+            if selected_tests is None
+            else [_to_nodeid(test) for test in selected_tests]
+        )
         run_uid = _build_run_uid()
         run_dir = _create_run_dir(resolved_project_path, run_uid)
         stdout_path = run_dir / "stdout.txt"
@@ -157,6 +168,67 @@ def _create_run_dir(project_path: Path, run_uid: str) -> Path:
     run_dir = project_path / ARTIFACTS_DIR_NAME / "test-runs" / run_uid
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
+
+
+def _write_empty_selection_report(
+    project_path: Path,
+    collect_coverage: CoverageFormat | None,
+    collects_tests: bool,
+) -> str:
+    run_uid = _build_run_uid()
+    run_dir = _create_run_dir(project_path, run_uid)
+    stdout_path = run_dir / "stdout.txt"
+    stderr_path = run_dir / "stderr.txt"
+    test_report_path = run_dir / REPORT_FILE_NAME
+    command = [sys.executable, "-m", "pytest"]
+    started_at = datetime.now(timezone.utc)
+    finished_at = datetime.now(timezone.utc)
+
+    stdout_path.write_text("No tests selected.\n", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
+
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "uid": run_uid,
+        "project_root": str(project_path),
+        "started_at": _format_timestamp(started_at),
+        "finished_at": _format_timestamp(finished_at),
+        "duration_seconds": 0.0,
+        "exit_code": 0,
+        "status": "passed",
+        "pytest": {
+            "args": command,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+        },
+        "selection": {
+            "selected_tests": [],
+        },
+        "summary": {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "total": 0,
+        },
+        "runned_tests": {},
+        "coverage": None,
+        "artifacts": {
+            "run_dir": str(run_dir),
+            "test_report_path": str(test_report_path),
+        },
+    }
+    if collect_coverage is not None:
+        report["coverage_warning"] = (
+            "coverage was not collected because no tests were selected"
+        )
+    if collects_tests:
+        report["collection_warning"] = "pytest was not started because no tests were selected"
+
+    test_report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return str(test_report_path)
 
 
 def _format_timestamp(value: datetime) -> str:

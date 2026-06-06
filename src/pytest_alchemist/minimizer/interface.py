@@ -7,7 +7,7 @@ from pytest_alchemist.minimizer.models import MinimizationInput, MinimizationRes
 
 OptimizerName = Literal["mopso", "greedy"]
 
-
+# Internal interface which each optimizer (greedy, MOPSO, etc.) must implement to be used by the main Minimizer
 class OptimizerInterface(Protocol):
     """Common interface implemented by concrete minimizer optimizers."""
 
@@ -20,7 +20,7 @@ class OptimizerInterface(Protocol):
     ) -> MinimizationResult:
         """Return a minimized subset from precomputed coverage facts."""
 
-
+# External interface for interactions with application module
 class MinimizerInterface(Protocol):
     """Common interface implemented by concrete minimizers."""
 

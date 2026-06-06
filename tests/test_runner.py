@@ -105,6 +105,26 @@ def test_run_tests_accepts_test_case(tmp_path: Path) -> None:
     assert report["selection"]["selected_tests"] == [test_case.nodeid]
 
 
+def test_run_tests_treats_empty_selection_as_noop(tmp_path: Path) -> None:
+    _create_pytest_project(tmp_path)
+
+    test_report_path = TestRunner().run_tests(str(tmp_path), [])
+    report = _read_report(test_report_path)
+
+    assert report["exit_code"] == 0
+    assert report["summary"] == {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "total": 0,
+    }
+    assert report["selection"]["selected_tests"] == []
+    assert report["runned_tests"] == {}
+    assert Path(report["pytest"]["stdout_path"]).read_text(encoding="utf-8") == (
+        "No tests selected.\n"
+    )
+
+
 def test_run_tests_collects_json_coverage(tmp_path: Path) -> None:
     _create_pytest_project(tmp_path)
 
