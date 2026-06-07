@@ -14,6 +14,7 @@ from pytest_alchemist.diff_picker.models import (
     SelectionDiagnostics,
     TestSelection,
 )
+from pytest_alchemist.subprocess_utils import run_captured_text
 
 _HUNK_HEADER = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
@@ -127,12 +128,10 @@ class DiffPicker:
         error_message: str,
     ) -> subprocess.CompletedProcess[str]:
         try:
-            return subprocess.run(
+            return run_captured_text(
                 ["git", *args],
                 cwd=self._database.project_path,
                 check=True,
-                capture_output=True,
-                text=True,
             )
         except (FileNotFoundError, subprocess.CalledProcessError) as error:
             raise DiffRangeError(error_message) from error

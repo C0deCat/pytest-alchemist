@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 import uuid
@@ -13,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from pytest_alchemist.subprocess_utils import run_captured_text
 from pytest_alchemist.test_runner import logger
 from pytest_alchemist.test_runner.models import TestCase
 
@@ -94,12 +94,10 @@ class TestRunner:
 
         started_at = datetime.now(timezone.utc)
         started_monotonic = time.monotonic()
-        completed = subprocess.run(
+        completed = run_captured_text(
             command,
             cwd=resolved_project_path,
             env=env,
-            capture_output=True,
-            text=True,
             check=False,
         )
         finished_at = datetime.now(timezone.utc)

@@ -218,6 +218,37 @@ def test_save_test_run_persists_git_metadata(tmp_path: Path) -> None:
     assert run["git_is_dirty"] == 1
 
 
+def test_git_stdout_preserves_utf8_output(monkeypatch, tmp_path: Path) -> None:
+    from pytest_alchemist.database import facade as facade_module
+
+    calls = []
+
+    def fake_run_captured_text(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="branch-😇\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        facade_module,
+        "run_captured_text",
+        fake_run_captured_text,
+    )
+
+    assert facade_module._git_stdout(tmp_path, ["rev-parse", "--abbrev-ref", "HEAD"]) == (
+        "branch-😇"
+    )
+    assert calls == [
+        (
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            {"cwd": tmp_path, "check": True},
+        )
+    ]
+
+
 def test_save_test_run_persists_coverage_artifact(tmp_path: Path) -> None:
     database = DatabaseFacade(project_path=tmp_path)
     run_dir = tmp_path / ARTIFACTS_DIR_NAME / "test-runs" / "run-coverage"

@@ -324,6 +324,26 @@ def test_diff_picker_selects_changes_for_one_commit_hash_only(tmp_path: Path) ->
     ]
 
 
+def test_diff_picker_decodes_utf8_git_diff_output(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    module_path = tmp_path / "module.py"
+    module_path.write_text('VALUE = "plain"\n', encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    module_path.write_text('VALUE = "😇"\n', encoding="utf-8")
+    _commit_all(tmp_path, "unicode change")
+
+    selection = DiffPicker(DatabaseFacade(tmp_path)).pick_candidates(last_commits=1)
+
+    assert selection.target_changes == [
+        ChangedCode(
+            file_path="module.py",
+            added_lines=[],
+            modified_lines=[1],
+            deleted_lines=[1],
+        )
+    ]
+
+
 def test_diff_picker_reports_missing_and_degraded_coverage(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     source_path = tmp_path / "src"

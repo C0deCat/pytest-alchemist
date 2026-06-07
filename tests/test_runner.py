@@ -209,3 +209,33 @@ def test_run_tests_can_skip_per_test_collection(tmp_path: Path) -> None:
     assert report["exit_code"] == 0
     assert report["summary"]["passed"] == 2
     assert report["runned_tests"] == {}
+
+
+def test_run_tests_writes_utf8_subprocess_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    tests_path = tmp_path / "tests"
+    tests_path.mkdir()
+    (tests_path / "test_unicode.py").write_text(
+        "\n".join(
+            [
+                "def test_unicode_output():",
+                "    print('pytest says 😇')",
+                "    assert False",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    test_report_path = TestRunner().run_tests(
+        str(tmp_path),
+        ["tests/test_unicode.py::test_unicode_output"],
+    )
+    report = _read_report(test_report_path)
+    stdout = Path(report["pytest"]["stdout_path"]).read_text(encoding="utf-8")
+
+    assert report["exit_code"] == 1
+    assert "pytest says 😇" in stdout

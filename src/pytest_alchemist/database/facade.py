@@ -18,6 +18,7 @@ from pytest_alchemist.coverage_analysis.models import (
     CoverageLineFact,
     CoverageRecord,
 )
+from pytest_alchemist.subprocess_utils import run_captured_text
 from pytest_alchemist.test_runner.models import TestCase
 
 ARTIFACTS_DIR_NAME = ".pytest-alchemist-artifacts"
@@ -874,12 +875,10 @@ def _read_git_snapshot(project_path: Path) -> tuple[str | None, str | None, bool
 
 def _git_stdout(project_path: Path, args: list[str]) -> str | None:
     try:
-        completed = subprocess.run(
+        completed = run_captured_text(
             ["git", *args],
             cwd=project_path,
             check=True,
-            capture_output=True,
-            text=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
